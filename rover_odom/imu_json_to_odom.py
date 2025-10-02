@@ -13,6 +13,29 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
 
+def rpy_to_quat(roll, pitch, yaw):
+    cr = math.cos(roll/2); sr = math.sin(roll/2)
+    cp = math.cos(pitch/2); sp = math.sin(pitch/2)
+    cy = math.cos(yaw/2); sy = math.sin(yaw/2)
+    qw = cr*cp*cy + sr*sp*sy
+    qx = sr*cp*cy - cr*sp*sy
+    qy = cr*sp*cy + sr*cp*sy
+    qz = cr*cp*sy - sr*sp*cy
+    return (qx, qy, qz, qw)
+
+def quat_conj(q):
+    x,y,z,w = q
+    return (-x, -y, -z, w)
+
+def quat_mul(q1, q2):
+    x1,y1,z1,w1 = q1
+    x2,y2,z2,w2 = q2
+    return (
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+        w1*w2 - x1*x2 - y1*y2 - z1*z2
+    )
 
 def euler_zyx_to_quat(roll: float, pitch: float, yaw: float):
     """Convert ZYX (yaw-pitch-roll) Euler angles [rad] to quaternion (x,y,z,w)."""
@@ -65,6 +88,8 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('topic_name', '/odom')
         self.declare_parameter('rate_hz', 50.0)
         self.declare_parameter('timeout_s', 1.0)
+        self.declare_parameter('mounting_rpy_deg', [0.0, 0.0, 180.0])
+        self.declare_parameter('apply_mounting_tf_in_odom', True)
 
         # Read parameters
         self.http_url = self.get_parameter('http_url').value
@@ -79,6 +104,14 @@ class ImuJsonToOdom(Node):
         self.topic_name = self.get_parameter('topic_name').value
         self.rate_hz = float(self.get_parameter('rate_hz').value)
         self.timeout_s = float(self.get_parameter('timeout_s').value)
+        self.mounting_rpy_deg = list(self.get_parameter('mounting_rpy_deg').value)
+        self.apply_mounting_tf = bool(self.get_parameter('apply_mounting_tf_in_odom').value)
+
+        # Pre-compute mounting quaternion: base_link <- imu_link
+        mr, mp, my = [math.radians(v) for v in self.mounting_rpy_deg]
+        # static TF publishes base->imu; we need imu->base for orientation correction → inverse (conjugate)
+        q_base_from_imu = rpy_to_quat(mr, mp, my)
+        self.q_imu_to_base = quat_conj(q_base_from_imu)
 
         # Publisher / TF
         self.odom_pub = self.create_publisher(Odometry, self.topic_name, 10)
@@ -149,7 +182,16 @@ class ImuJsonToOdom(Node):
                 gy = math.radians(gy)
                 gz = math.radians(gz)
 
+            # Quaternion as reported by the IMU (in imu_link frame)
             qx, qy, qz, qw = euler_zyx_to_quat(r, p, y)
+
+            # Rotate IMU quaternion into base_link using imu->base mounting quaternion
+            q_imu = (qx, qy, qz, qw)
+            if self.apply_mounting_tf:
+                qx, qy, qz, qw = quat_mul(self.q_imu_to_base, q_imu)
+            else:
+                qx, qy, qz, qw = q_imu
+                
         except Exception as e:
             self.get_logger().warn(f"Conversion error: {e}")
             return
