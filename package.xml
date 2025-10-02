@@ -16,6 +16,9 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>rviz2</exec_depend>
 
   <!-- Optional: for tests (can remove if you don’t care) -->
   <test_depend>ament_lint_auto</test_depend>

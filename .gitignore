@@ -22,3 +22,5 @@ Thumbs.db
 # Virtual environments
 venv/
 .env/
+__pycache__/
+*.pyc
