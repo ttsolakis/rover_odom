@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rover_odom</name>
+  <version>0.1.0</version>
+  <description>Minimal package with node converting IMU JSON data into nav_msgs/Odometry messages and fusing wheel speeds (future work).</description>
+
+  <maintainer email="tas.tsolakis@gmail.com">tasos</maintainer>
+  <license>MIT</license>
+
+  <!-- Build system -->
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- Runtime dependencies -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <!-- Optional: for tests (can remove if you don’t care) -->
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <!-- Needed for Python packages -->
+    <build_type>ament_python</build_type>
+  </export>
+</package>
