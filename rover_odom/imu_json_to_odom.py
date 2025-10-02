@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import math
 import json
+import re
 import urllib.request
+from urllib.parse import urlencode
 from typing import Optional
 
 import rclpy
@@ -13,9 +15,7 @@ from tf2_ros import TransformBroadcaster
 
 
 def euler_zyx_to_quat(roll: float, pitch: float, yaw: float):
-    """
-    Convert ZYX (yaw-pitch-roll) Euler angles [rad] to quaternion (x,y,z,w).
-    """
+    """Convert ZYX (yaw-pitch-roll) Euler angles [rad] to quaternion (x,y,z,w)."""
     cy = math.cos(yaw * 0.5)
     sy = math.sin(yaw * 0.5)
     cp = math.cos(pitch * 0.5)
@@ -32,20 +32,21 @@ def euler_zyx_to_quat(roll: float, pitch: float, yaw: float):
 
 class ImuJsonToOdom(Node):
     """
-    Minimal node that polls an HTTP JSON endpoint with keys:
-      r,p,y (deg or rad), ax,ay,az (m/s^2), gx,gy,gz (rad/s or deg/s)
-    and publishes nav_msgs/Odometry on /odom. Also broadcasts odom->base_link TF if enabled.
+    Node that polls an HTTP JSON endpoint and publishes nav_msgs/Odometry.
 
-    Parameters (can be set in launch):
-      http_url (string): e.g., "http://192.168.4.1/js"
-      rpy_is_deg (bool): default True
-      gyro_is_deg (bool): default False
-      publish_tf (bool): default True
-      odom_frame (string): default "odom"
-      base_link_frame (string): default "base_link"
-      topic_name (string): default "/odom"
-      rate_hz (double): default 50.0
-      timeout_s (double): HTTP timeout seconds (default 1.0)
+    Parameters:
+      http_url (string): base URL (default: http://192.168.4.1/js)
+      request_mode (string): 'plain' or 'param'
+      poll_json (string): JSON payload to send each poll (only in 'param' mode)
+      enable_once_json (string): JSON payload sent once at startup
+      rpy_is_deg (bool): whether r,p,y are in degrees (default True)
+      gyro_is_deg (bool): whether gx,gy,gz are in deg/s (default False)
+      publish_tf (bool): whether to also broadcast odom->base_link TF
+      odom_frame (string): name of odom frame
+      base_link_frame (string): name of base_link frame
+      topic_name (string): odometry topic name
+      rate_hz (float): polling rate
+      timeout_s (float): HTTP timeout
     """
 
     def __init__(self):
@@ -53,6 +54,9 @@ class ImuJsonToOdom(Node):
 
         # Declare parameters
         self.declare_parameter('http_url', 'http://192.168.4.1/js')
+        self.declare_parameter('request_mode', 'plain')    # plain or param
+        self.declare_parameter('poll_json', '{"T":126}')
+        self.declare_parameter('enable_once_json', '')
         self.declare_parameter('rpy_is_deg', True)
         self.declare_parameter('gyro_is_deg', False)
         self.declare_parameter('publish_tf', True)
@@ -63,37 +67,59 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('timeout_s', 1.0)
 
         # Read parameters
-        self.http_url = self.get_parameter('http_url').get_parameter_value().string_value
-        self.rpy_is_deg = self.get_parameter('rpy_is_deg').get_parameter_value().bool_value
-        self.gyro_is_deg = self.get_parameter('gyro_is_deg').get_parameter_value().bool_value
-        self.publish_tf = self.get_parameter('publish_tf').get_parameter_value().bool_value
-        self.odom_frame = self.get_parameter('odom_frame').get_parameter_value().string_value
-        self.base_link = self.get_parameter('base_link_frame').get_parameter_value().string_value
-        self.topic_name = self.get_parameter('topic_name').get_parameter_value().string_value
+        self.http_url = self.get_parameter('http_url').value
+        self.request_mode = self.get_parameter('request_mode').value
+        self.poll_json = self.get_parameter('poll_json').value
+        self.enable_once_json = self.get_parameter('enable_once_json').value
+        self.rpy_is_deg = self.get_parameter('rpy_is_deg').value
+        self.gyro_is_deg = self.get_parameter('gyro_is_deg').value
+        self.publish_tf = self.get_parameter('publish_tf').value
+        self.odom_frame = self.get_parameter('odom_frame').value
+        self.base_link = self.get_parameter('base_link_frame').value
+        self.topic_name = self.get_parameter('topic_name').value
         self.rate_hz = float(self.get_parameter('rate_hz').value)
         self.timeout_s = float(self.get_parameter('timeout_s').value)
 
-        # Publishers / TF
+        # Publisher / TF
         self.odom_pub = self.create_publisher(Odometry, self.topic_name, 10)
         self.tf_broadcaster: Optional[TransformBroadcaster] = (
             TransformBroadcaster(self) if self.publish_tf else None
         )
 
+        # Optionally send enable_once_json to device
+        if self.enable_once_json:
+            try:
+                url = f"{self.http_url}?{urlencode({'json': self.enable_once_json})}"
+                urllib.request.urlopen(url, timeout=self.timeout_s).read()
+                self.get_logger().info(f"Sent enable_once_json: {self.enable_once_json}")
+            except Exception as e:
+                self.get_logger().warn(f"Failed enable_once_json: {e}")
+
         self.get_logger().info(
-            f'rover_odom: polling {self.http_url} at {self.rate_hz:.1f} Hz → publishing {self.topic_name}'
+            f"Polling {self.http_url} at {self.rate_hz:.1f} Hz (mode={self.request_mode})"
         )
 
-        # Timer for polling
+        # Poll timer
         period = 1.0 / max(1.0, self.rate_hz)
         self.timer = self.create_timer(period, self._timer_cb)
 
     def _fetch_json(self) -> Optional[dict]:
         try:
-            with urllib.request.urlopen(self.http_url, timeout=self.timeout_s) as resp:
+            if self.request_mode == 'param':
+                url = f"{self.http_url}?{urlencode({'json': self.poll_json})}"
+            else:
+                url = self.http_url
+
+            with urllib.request.urlopen(url, timeout=self.timeout_s) as resp:
                 data = resp.read().decode('utf-8', errors='ignore')
-                return json.loads(data)
+                try:
+                    return json.loads(data)
+                except json.JSONDecodeError:
+                    # Fix unquoted keys {r:1} → {"r":1}
+                    data_fixed = re.sub(r'([{\[,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', data)
+                    return json.loads(data_fixed)
         except Exception as e:
-            self.get_logger().warn(f'HTTP fetch/parse error: {e}')
+            self.get_logger().warn(f"HTTP fetch/parse error: {e}")
             return None
 
     def _timer_cb(self):
@@ -101,9 +127,9 @@ class ImuJsonToOdom(Node):
         if not js:
             return
 
-        required = ['r', 'p', 'y', 'ax', 'ay', 'az', 'gx', 'gy', 'gz']
+        required = ['r', 'p', 'y', 'gx', 'gy', 'gz']
         if not all(k in js for k in required):
-            self.get_logger().warn(f'Missing keys in JSON. Got: {list(js.keys())}')
+            self.get_logger().warn(f"Missing keys: {list(js.keys())}")
             return
 
         try:
@@ -123,12 +149,9 @@ class ImuJsonToOdom(Node):
                 gy = math.radians(gy)
                 gz = math.radians(gz)
 
-            # Accels parsed but not used for pose here (kept for future fusion)
-            # ax = float(js['ax']); ay = float(js['ay']); az = float(js['az'])
-
             qx, qy, qz, qw = euler_zyx_to_quat(r, p, y)
         except Exception as e:
-            self.get_logger().warn(f'Conversion error: {e}')
+            self.get_logger().warn(f"Conversion error: {e}")
             return
 
         now = self.get_clock().now().to_msg()
@@ -140,43 +163,18 @@ class ImuJsonToOdom(Node):
         odom.header.frame_id = self.odom_frame
         odom.child_frame_id = self.base_link
 
-        # Position unknown (keep 0 with very large covariance)
-        odom.pose.pose.position.x = 0.0
-        odom.pose.pose.position.y = 0.0
-        odom.pose.pose.position.z = 0.0
         odom.pose.pose.orientation.x = qx
         odom.pose.pose.orientation.y = qy
         odom.pose.pose.orientation.z = qz
         odom.pose.pose.orientation.w = qw
-        odom.pose.covariance = [
-            1e6, 0,   0,   0,   0,   0,
-            0,   1e6, 0,   0,   0,   0,
-            0,   0,   1e6, 0,   0,   0,
-            0,   0,   0,   1e-2, 0,   0,
-            0,   0,   0,   0,   1e-2, 0,
-            0,   0,   0,   0,   0,   1e-2
-        ]
 
-        # Velocity: no linear estimate; pass gyro as angular
-        odom.twist.twist.linear.x = 0.0
-        odom.twist.twist.linear.y = 0.0
-        odom.twist.twist.linear.z = 0.0
         odom.twist.twist.angular.x = gx
         odom.twist.twist.angular.y = gy
         odom.twist.twist.angular.z = gz
-        odom.twist.covariance = [
-            1e6, 0,   0,   0,   0,   0,
-            0,   1e6, 0,   0,   0,   0,
-            0,   0,   1e6, 0,   0,   0,
-            0,   0,   0,   1e-3, 0,   0,
-            0,   0,   0,   0,   1e-3, 0,
-            0,   0,   0,   0,   0,   1e-3
-        ]
 
         self.odom_pub.publish(odom)
 
-        # Optional TF odom -> base_link
-        if self.tf_broadcaster is not None:
+        if self.tf_broadcaster:
             t = TransformStamped()
             t.header.stamp = now
             t.header.frame_id = self.odom_frame
@@ -201,5 +199,6 @@ def main():
         rclpy.shutdown()
 
 
-if _name_ == '_main_':
+if __name__ == '__main__':
     main()
+    
