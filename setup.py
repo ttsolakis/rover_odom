@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'imu_json_to_odom = rover_odom.imu_json_to_odom:main',
+            'rover_teleop = rover_odom.rover_teleop:main',
         ],
     },
 )

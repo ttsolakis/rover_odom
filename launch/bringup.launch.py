@@ -1,16 +1,22 @@
 # launch/bringup.launch.py
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, ExecuteProcess
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-from launch.substitutions import PathJoinSubstitution
-from launch.substitutions import Command, FindExecutable
+from launch.substitutions import PathJoinSubstitution, Command, FindExecutable, LaunchConfiguration
 from launch_ros.parameter_descriptions import ParameterValue   # <-- added
 from ament_index_python.packages import get_package_share_directory
 import os
 
 def generate_launch_description():
+    # Toggle starting teleop (needs a real terminal/TTY)
+    start_teleop_arg = DeclareLaunchArgument(
+        'start_teleop', default_value='true',
+        description='Start rover_teleop in a separate terminal (WASD).'
+    )
+
     # 1) LiDAR driver
     sllidar_pkg = get_package_share_directory('sllidar_ros2')
     lidar_launch = IncludeLaunchDescription(
@@ -22,7 +28,6 @@ def generate_launch_description():
             'serial_baudrate': '460800',
             'frame_id': 'lidar_link'
         }.items()
-    
     )
 
     # 2) IMU → Odometry (include your parameterized launch)
@@ -96,11 +101,29 @@ def generate_launch_description():
         arguments=['-d', rviz_config]
     )
 
+    # 6) Teleop (WASD) in a separate terminal so it can read keys
+    #    Requires a terminal emulator; change to xterm/konsole/kitty if you prefer.
+    teleop = ExecuteProcess(
+        cmd=[
+            'gnome-terminal', '--', 'bash', '-lc',
+            # You can tweak params here (http_url, rate_hz, max_apply_s, send_http)
+            'ros2 run rover_odom rover_teleop '
+            '--ros-args '
+            '-p http_url:=http://192.168.4.1/js '
+            '-p rate_hz:=20.0 '
+            '-p max_apply_s:=0.6 '
+        ],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('start_teleop')),
+    )
+
     return LaunchDescription([
+        start_teleop_arg,
         lidar_launch,
         imu_odom_launch,
         slam,
         lifecycle_manager,
         robot_state_pub,
         rviz,
+        teleop,
     ])
