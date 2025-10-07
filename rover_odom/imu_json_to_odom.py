@@ -141,8 +141,13 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('accel_is_mg', True)
         self.declare_parameter('auto_level', True)
         self.declare_parameter('level_samples', 50)
-        self.declare_parameter('level_gyro_thresh', 0.2)  
-        self.declare_parameter('level_g_tolerance', 2.0) 
+        self.declare_parameter('level_gyro_thresh', 0.1)  
+        self.declare_parameter('level_accel_thresh', 0.2)
+        self.declare_parameter('bias_samples', 50)
+        self.declare_parameter('zupt_gyro_thresh', 0.1)
+        self.declare_parameter('zupt_accel_thresh', 0.2)
+        self.declare_parameter('filter_alpha', 0.1) 
+        self.declare_parameter('velocity_damping_lambda', 0.05) 
         self.declare_parameter('publish_tf', True)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_link_frame', 'base_link')
@@ -163,7 +168,12 @@ class ImuJsonToOdom(Node):
         self.auto_level = bool(self.get_parameter('auto_level').value)
         self.level_samples = int(self.get_parameter('level_samples').value)
         self.level_gyro_thresh = float(self.get_parameter('level_gyro_thresh').value)
-        self.level_g_tol = float(self.get_parameter('level_g_tolerance').value)
+        self.level_accel_thresh = float(self.get_parameter('level_accel_thresh').value)
+        self.bias_samples = int(self.get_parameter('bias_samples').value)
+        self.zupt_gyro_thresh = float(self.get_parameter('zupt_gyro_thresh').value)
+        self.zupt_accel_thresh = float(self.get_parameter('zupt_accel_thresh').value)
+        self.filter_alpha = float(self.get_parameter('filter_alpha').value)
+        self.velocity_damping_lambda = float(self.get_parameter('velocity_damping_lambda').value)
         self.publish_tf = self.get_parameter('publish_tf').value
         self.odom_frame = self.get_parameter('odom_frame').value
         self.base_link = self.get_parameter('base_link_frame').value
@@ -174,10 +184,24 @@ class ImuJsonToOdom(Node):
         self.apply_mounting_tf = bool(self.get_parameter('apply_mounting_tf_in_odom').value)
 
         # calibration buffers/state
+        self.g = 9.80665
         self._calib_count = 0
         self._acc_sum = [0.0, 0.0, 0.0]  # sum of raw accel (before any rotation) in m/s^2
         self._calib_done = (not self.auto_level)
         self.q_align = (0.0, 0.0, 0.0, 1.0)  # imu_link -> "ideal imu" (Z up) tilt correction
+
+        # Integration state (planar)
+        self.prev_time_sec = None
+        self.vx = 0.0
+        self.vy = 0.0
+        self.ax_bias = 0.0
+        self.ay_bias = 0.0
+        self.ax_filtered = 0.0
+        self.ay_filtered = 0.0
+        self._bias_ax_sum = 0.0
+        self._bias_ay_sum = 0.0
+        self._bias_count = 0
+        self._bias_done = False
 
         # Pre-compute mounting quaternion: base_link <- imu_link
         mr, mp, my = [math.radians(v) for v in self.mounting_rpy_deg]
@@ -272,9 +296,9 @@ class ImuJsonToOdom(Node):
                     
                 gyro_norm = math.sqrt(gx*gx + gy*gy + gz*gz)
                 a_norm = math.sqrt(ax*ax + ay*ay + az*az)
-                g = 9.80665
+                is_still = (gyro_norm < self.level_gyro_thresh and abs(a_norm - self.g) < self.level_accel_thresh)
 
-                if gyro_norm < self.level_gyro_thresh and abs(a_norm - g) < self.level_g_tol:
+                if is_still:
                     self._acc_sum[0] += ax
                     self._acc_sum[1] += ay
                     self._acc_sum[2] += az
@@ -287,7 +311,7 @@ class ImuJsonToOdom(Node):
                     az_mean = self._acc_sum[2] / self._calib_count
                     # we want rotation that maps measured gravity -> +Z axis
                     # NOTE: accel measures specific force; at rest it's ~ +g along +Z in the sensor frame
-                    q_tilt = quat_from_two_vectors((ax_mean, ay_mean, az_mean), (0.0, 0.0, g))
+                    q_tilt = quat_from_two_vectors((ax_mean, ay_mean, az_mean), (0.0, 0.0, self.g))
                     self.q_align = quat_normalize(q_tilt)
                     self._calib_done = True
                     self.get_logger().info(f"Auto-level complete (samples={self._calib_count}).")
@@ -309,7 +333,62 @@ class ImuJsonToOdom(Node):
                 ax, ay, az = rotate_vec_by_quat((ax, ay, az), q_total)
             else:
                 qx, qy, qz, qw = q_imu
-                
+
+            # --- INTEGRATION: get linear velocity from acceleration (simple approx, no drift correction) ---
+
+            # Learn accel bias on x,y while still (reduces integration drift)
+            if self._calib_done and not self._bias_done and self.auto_level:
+                az_lin = az - self.g  # gravity-compensated vertical
+                gyro_norm = math.sqrt(gx*gx + gy*gy + gz*gz)
+                alin_norm = math.sqrt(ax*ax + ay*ay + az_lin*az_lin)
+                is_still_zupt = (gyro_norm < self.zupt_gyro_thresh) and (alin_norm < self.zupt_accel_thresh)
+                if self._bias_count == 0:
+                    self.get_logger().info("Bias computation: hold still for ~1–2s...")
+
+                if is_still_zupt:
+                    self._bias_ax_sum += ax
+                    self._bias_ay_sum += ay
+                    self._bias_count += 1
+
+                if is_still_zupt and self._bias_count >= self.bias_samples:
+                    self.ax_bias = self._bias_ax_sum / self._bias_count
+                    self.ay_bias = self._bias_ay_sum / self._bias_count
+                    self._bias_done = True
+                    self.get_logger().info(f"Accel bias completed: ax_bias={self.ax_bias:.4f} m/s², ay_bias={self.ay_bias:.4f} m/s² (N={self._bias_count})")
+
+            # dt from node clock (clamped to avoid spikes)
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            if self.prev_time_sec is None:
+                dt = 1.0 / max(1.0, self.rate_hz)
+            else:
+                dt = max(0.0, min(0.2, now_sec - self.prev_time_sec))
+            self.prev_time_sec = now_sec
+
+            # Unbias + EMA prefilter (planar)
+            ax_unbias = ax - self.ax_bias
+            ay_unbias = ay - self.ay_bias
+            alpha = max(0.0, min(1.0, self.filter_alpha))
+            # Larger alpha -> more smoothing (more “memory” of the past), smaller alpha -> snappier.
+            self.ax_filtered = alpha * self.ax_filtered + (1.0 - alpha) * ax_unbias
+            self.ay_filtered = alpha * self.ay_filtered + (1.0 - alpha) * ay_unbias
+
+            # Integrate velocity with ZUPT
+            az_lin = az - self.g  # gravity-compensated vertical
+            gyro_norm = math.sqrt(gx*gx + gy*gy + gz*gz)
+            alin_norm = math.sqrt(ax*ax + ay*ay + az_lin*az_lin)
+            is_still = (gyro_norm < self.zupt_gyro_thresh) and (alin_norm < self.zupt_accel_thresh)
+            if is_still:
+                self.vx = 0.0
+                self.vy = 0.0
+            else:
+                self.vx += self.ax_filtered * dt
+                self.vy += self.ay_filtered * dt
+
+            # Anti-drift (leak) toward zero
+            damp = math.exp(-self.velocity_damping_lambda * dt)
+            self.vx *= damp
+            self.vy *= damp
+
         except Exception as e:
             self.get_logger().warning(f"Conversion error: {e}")
             return
@@ -329,9 +408,9 @@ class ImuJsonToOdom(Node):
         odom.pose.pose.orientation.w = qw
 
         # (STEP 3 will compute linear twist from integrated accel)
-        odom.twist.twist.linear.x = ax
-        odom.twist.twist.linear.y = ay
-        odom.twist.twist.linear.z = az
+        odom.twist.twist.linear.x = self.vx
+        odom.twist.twist.linear.y = self.vy
+        odom.twist.twist.linear.z = 0.0
 
         odom.twist.twist.angular.x = gx
         odom.twist.twist.angular.y = gy

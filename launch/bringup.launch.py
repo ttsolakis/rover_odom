@@ -45,15 +45,21 @@ def generate_launch_description():
             'gyro_is_deg': 'true',
             'accel_is_mg': 'true',
             'auto_level': 'true',
+
             'level_samples': '100',
-            'level_gyro_thresh': '0.2',
-            'level_g_tolerance': '2.0',
+            'level_gyro_thresh': '0.1',
+            'level_accel_thresh': '0.2',
+            'bias_samples': '100',
+            'zupt_gyro_thresh': '0.1',
+            'zupt_accel_thresh': '0.2',
+            'filter_alpha': '0.0',
+            'velocity_damping_lambda': '0.05',
+
             'publish_tf': 'true',
             'odom_frame': 'odom',
             'base_link_frame': 'base_link',
             'topic_name': '/odom',
             'timeout_s': '1.0',
-            'mounting_rpy_deg': '[0.0, 0.0, 180.0]',
             'apply_mounting_tf_in_odom': 'true',
         }.items()
     )
