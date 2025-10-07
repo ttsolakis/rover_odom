@@ -40,8 +40,21 @@ def generate_launch_description():
             'http_url': 'http://192.168.4.1/js',
             'request_mode': 'param',
             'poll_json': '{"T":126}',
+            'rate_hz': '50.0',
             'rpy_is_deg': 'true',
             'gyro_is_deg': 'true',
+            'accel_is_mg': 'true',
+            'auto_level': 'true',
+            'level_samples': '100',
+            'level_gyro_thresh': '0.2',
+            'level_g_tolerance': '2.0',
+            'publish_tf': 'true',
+            'odom_frame': 'odom',
+            'base_link_frame': 'base_link',
+            'topic_name': '/odom',
+            'timeout_s': '1.0',
+            'mounting_rpy_deg': '[0.0, 0.0, 180.0]',
+            'apply_mounting_tf_in_odom': 'true',
         }.items()
     )
 
@@ -110,7 +123,7 @@ def generate_launch_description():
             'ros2 run rover_odom rover_teleop '
             '--ros-args '
             '-p http_url:=http://192.168.4.1/js '
-            '-p rate_hz:=20.0 '
+            '-p rate_hz:=50.0 '
             '-p max_apply_s:=0.6 '
         ],
         output='screen',

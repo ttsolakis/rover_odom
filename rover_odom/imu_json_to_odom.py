@@ -52,6 +52,62 @@ def euler_zyx_to_quat(roll: float, pitch: float, yaw: float):
     qz = cr * cp * sy - sr * sp * cy
     return qx, qy, qz, qw
 
+def rotate_vec_by_quat(v, q):
+    """
+    Rotate 3D vector v by quaternion q=(x,y,z,w): v' = q * v * q_conj
+    Assumes q rotates from imu_link to base_link when you pass self.q_imu_to_base.
+    """
+    vx, vy, vz = v
+    qx, qy, qz, qw = q
+    # t = 2 * (q_vec x v)
+    tx = 2.0 * (qy * vz - qz * vy)
+    ty = 2.0 * (qz * vx - qx * vz)
+    tz = 2.0 * (qx * vy - qy * vx)
+    # v' = v + w*t + q_vec x t
+    vpx = vx + qw * tx + (qy * tz - qz * ty)
+    vpy = vy + qw * ty + (qz * tx - qx * tz)
+    vpz = vz + qw * tz + (qx * ty - qy * tx)
+    return (vpx, vpy, vpz)
+
+def quat_normalize(q):
+    x,y,z,w = q
+    n = math.sqrt(x*x + y*y + z*z + w*w) or 1.0
+    return (x/n, y/n, z/n, w/n)
+
+def quat_from_two_vectors(a, b):
+    """
+    Return quaternion q that rotates unit vector a -> unit vector b.
+    a,b arbitrary 3D; handles near-opposite safely.
+    """
+    ax,ay,az = a
+    bx,by,bz = b
+    # normalize inputs
+    an = math.sqrt(ax*ax+ay*ay+az*az) or 1.0
+    bn = math.sqrt(bx*bx+by*by+bz*bz) or 1.0
+    ax,ay,az = ax/an, ay/an, az/an
+    bx,by,bz = bx/bn, by/bn, bz/bn
+
+    # cross and dot
+    cx = ay*bz - az*by
+    cy = az*bx - ax*bz
+    cz = ax*by - ay*bx
+    d = ax*bx + ay*by + az*bz
+
+    if d < -0.999999:  # 180deg: pick any orthogonal axis
+        # choose axis orthogonal to a
+        if abs(ax) < 0.1 and abs(ay) < 0.9:
+            rx, ry, rz = 0.0, -az, ay
+        else:
+            rx, ry, rz = -az, 0.0, ax
+        rn = math.sqrt(rx*rx+ry*ry+rz*rz) or 1.0
+        rx, ry, rz = rx/rn, ry/rn, rz/rn
+        return (rx*1.0, ry*1.0, rz*1.0, 0.0)  # 180deg
+    # general case
+    qx = cx
+    qy = cy
+    qz = cz
+    qw = 1.0 + d
+    return quat_normalize((qx, qy, qz, qw))
 
 class ImuJsonToOdom(Node):
     """
@@ -81,7 +137,12 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('poll_json', '{"T":126}')
         self.declare_parameter('enable_once_json', '')
         self.declare_parameter('rpy_is_deg', True)
-        self.declare_parameter('gyro_is_deg', False)
+        self.declare_parameter('gyro_is_deg', True)
+        self.declare_parameter('accel_is_mg', True)
+        self.declare_parameter('auto_level', True)
+        self.declare_parameter('level_samples', 50)
+        self.declare_parameter('level_gyro_thresh', 0.2)  
+        self.declare_parameter('level_g_tolerance', 2.0) 
         self.declare_parameter('publish_tf', True)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_link_frame', 'base_link')
@@ -98,6 +159,11 @@ class ImuJsonToOdom(Node):
         self.enable_once_json = self.get_parameter('enable_once_json').value
         self.rpy_is_deg = self.get_parameter('rpy_is_deg').value
         self.gyro_is_deg = self.get_parameter('gyro_is_deg').value
+        self.accel_is_mg = self.get_parameter('accel_is_mg').value
+        self.auto_level = bool(self.get_parameter('auto_level').value)
+        self.level_samples = int(self.get_parameter('level_samples').value)
+        self.level_gyro_thresh = float(self.get_parameter('level_gyro_thresh').value)
+        self.level_g_tol = float(self.get_parameter('level_g_tolerance').value)
         self.publish_tf = self.get_parameter('publish_tf').value
         self.odom_frame = self.get_parameter('odom_frame').value
         self.base_link = self.get_parameter('base_link_frame').value
@@ -107,11 +173,18 @@ class ImuJsonToOdom(Node):
         self.mounting_rpy_deg = list(self.get_parameter('mounting_rpy_deg').value)
         self.apply_mounting_tf = bool(self.get_parameter('apply_mounting_tf_in_odom').value)
 
+        # calibration buffers/state
+        self._calib_count = 0
+        self._acc_sum = [0.0, 0.0, 0.0]  # sum of raw accel (before any rotation) in m/s^2
+        self._calib_done = (not self.auto_level)
+        self.q_align = (0.0, 0.0, 0.0, 1.0)  # imu_link -> "ideal imu" (Z up) tilt correction
+
         # Pre-compute mounting quaternion: base_link <- imu_link
         mr, mp, my = [math.radians(v) for v in self.mounting_rpy_deg]
         # static TF publishes base->imu; we need imu->base for orientation correction → inverse (conjugate)
         q_base_from_imu = rpy_to_quat(mr, mp, my)
         self.q_imu_to_base = quat_conj(q_base_from_imu)
+        self.q_imu_to_base = quat_normalize(self.q_imu_to_base)
 
         # Publisher / TF
         self.odom_pub = self.create_publisher(Odometry, self.topic_name, 10)
@@ -126,7 +199,7 @@ class ImuJsonToOdom(Node):
                 urllib.request.urlopen(url, timeout=self.timeout_s).read()
                 self.get_logger().info(f"Sent enable_once_json: {self.enable_once_json}")
             except Exception as e:
-                self.get_logger().warn(f"Failed enable_once_json: {e}")
+                self.get_logger().warning(f"Failed enable_once_json: {e}")
 
         self.get_logger().info(
             f"Polling {self.http_url} at {self.rate_hz:.1f} Hz (mode={self.request_mode})"
@@ -152,7 +225,7 @@ class ImuJsonToOdom(Node):
                     data_fixed = re.sub(r'([{\[,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', data)
                     return json.loads(data_fixed)
         except Exception as e:
-            self.get_logger().warn(f"HTTP fetch/parse error: {e}")
+            self.get_logger().warning(f"HTTP fetch/parse error: {e}")
             return None
 
     def _timer_cb(self):
@@ -160,9 +233,9 @@ class ImuJsonToOdom(Node):
         if not js:
             return
 
-        required = ['r', 'p', 'y', 'gx', 'gy', 'gz']
+        required = ['r', 'p', 'y', 'gx', 'gy', 'gz', 'ax', 'ay', 'az']
         if not all(k in js for k in required):
-            self.get_logger().warn(f"Missing keys: {list(js.keys())}")
+            self.get_logger().warning(f"Missing keys: {list(js.keys())}")
             return
 
         try:
@@ -170,30 +243,75 @@ class ImuJsonToOdom(Node):
             p = float(js['p'])
             y = float(js['y'])
             if self.rpy_is_deg:
-                r = math.radians(r)
-                p = math.radians(p)
-                y = math.radians(y)
+                r = math.radians(r)  # convert deg to rad
+                p = math.radians(p)  # convert deg to rad
+                y = math.radians(y)  # convert deg to rad
 
             gx = float(js['gx'])
             gy = float(js['gy'])
             gz = float(js['gz'])
             if self.gyro_is_deg:
-                gx = math.radians(gx)
-                gy = math.radians(gy)
-                gz = math.radians(gz)
+                gx = math.radians(gx)  # convert deg/s to rad/s
+                gy = math.radians(gy)  # convert deg/s to rad/s
+                gz = math.radians(gz)  # convert deg/s to rad/s
+
+            ax = float(js['ax'])
+            ay = float(js['ay'])
+            az = float(js['az'])
+            if self.accel_is_mg:
+                ax = 9.80665e-3 * ax  # convert mg to m/s²
+                ay = 9.80665e-3 * ay  # convert mg to m/s²
+                az = 9.80665e-3 * az  # convert mg to m/s²
+
+
+            # --- AUTO-LEVEL: estimate q_align from avg gravity vector (IMU must be stationary) ---
+            if not self._calib_done and self.auto_level:
+                # require small gyro magnitude to assume "still"
+                if self._calib_count == 0:
+                    self.get_logger().info("Auto-level: hold still for ~1–2s...")
+                    
+                gyro_norm = math.sqrt(gx*gx + gy*gy + gz*gz)
+                a_norm = math.sqrt(ax*ax + ay*ay + az*az)
+                g = 9.80665
+
+                if gyro_norm < self.level_gyro_thresh and abs(a_norm - g) < self.level_g_tol:
+                    self._acc_sum[0] += ax
+                    self._acc_sum[1] += ay
+                    self._acc_sum[2] += az
+                    self._calib_count += 1
+
+                if self._calib_count >= self.level_samples:
+                    # average gravity direction in IMU frame
+                    ax_mean = self._acc_sum[0] / self._calib_count
+                    ay_mean = self._acc_sum[1] / self._calib_count
+                    az_mean = self._acc_sum[2] / self._calib_count
+                    # we want rotation that maps measured gravity -> +Z axis
+                    # NOTE: accel measures specific force; at rest it's ~ +g along +Z in the sensor frame
+                    q_tilt = quat_from_two_vectors((ax_mean, ay_mean, az_mean), (0.0, 0.0, g))
+                    self.q_align = quat_normalize(q_tilt)
+                    self._calib_done = True
+                    self.get_logger().info(f"Auto-level complete (samples={self._calib_count}).")
 
             # Quaternion as reported by the IMU (in imu_link frame)
             qx, qy, qz, qw = euler_zyx_to_quat(r, p, y)
 
-            # Rotate IMU quaternion into base_link using imu->base mounting quaternion
-            q_imu = (qx, qy, qz, qw)
-            if self.apply_mounting_tf:
-                qx, qy, qz, qw = quat_mul(self.q_imu_to_base, q_imu)
+            # Compose rotation: imu_link --(q_align)--> ideal_imu --(q_imu_to_base)--> base_link
+            q_total = self.q_imu_to_base
+            if self._calib_done and self.auto_level:
+                q_total = quat_mul(self.q_imu_to_base, self.q_align)
+            q_total = quat_normalize(q_total)
+
+            # Apply IMU mounting correction (180° yaw): base_link using imu->base mounting quaternion
+            q_imu = quat_normalize((qx, qy, qz, qw))
+            if self.apply_mounting_tf:      
+                qx, qy, qz, qw = quat_mul(q_total, q_imu)  
+                gx, gy, gz = rotate_vec_by_quat((gx, gy, gz), q_total)
+                ax, ay, az = rotate_vec_by_quat((ax, ay, az), q_total)
             else:
                 qx, qy, qz, qw = q_imu
                 
         except Exception as e:
-            self.get_logger().warn(f"Conversion error: {e}")
+            self.get_logger().warning(f"Conversion error: {e}")
             return
 
         now = self.get_clock().now().to_msg()
@@ -209,6 +327,11 @@ class ImuJsonToOdom(Node):
         odom.pose.pose.orientation.y = qy
         odom.pose.pose.orientation.z = qz
         odom.pose.pose.orientation.w = qw
+
+        # (STEP 3 will compute linear twist from integrated accel)
+        odom.twist.twist.linear.x = ax
+        odom.twist.twist.linear.y = ay
+        odom.twist.twist.linear.z = az
 
         odom.twist.twist.angular.x = gx
         odom.twist.twist.angular.y = gy
