@@ -55,10 +55,10 @@ def generate_launch_description():
             'filter_alpha': '0.0',
             'velocity_damping_lambda': '0.05',
 
-            'publish_tf': 'true',
+            'publish_tf': 'false',
             'odom_frame': 'odom',
             'base_link_frame': 'base_link',
-            'topic_name': '/odom',
+            'topic_name': '/imu_odom',
             'timeout_s': '1.0',
             'apply_mounting_tf_in_odom': 'true',
         }.items()
@@ -143,8 +143,12 @@ def generate_launch_description():
         name='ekf_odom',
         output='screen',
         parameters=[{
-            'imu_odom_topic': '/odom',                 # TODO: switch to '/imu_odom' later
+            'imu_odom_topic': '/imu_odom',
             'wheel_cmd_topic': '/wheel_cmd_units_stamped',
+            'ekf_odom': '/ekf_odom',
+            'publish_tf': True,
+            'odom_frame': 'odom',
+            'base_link_frame': 'base_link',
             'log_every_n': 20,
             'cmd_buffer_size': 500,
         }],

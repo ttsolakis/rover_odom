@@ -43,10 +43,10 @@ def generate_launch_description():
                 'filter_alpha':            ParameterValue(LaunchConfiguration('filter_alpha'), value_type=float),
                 'velocity_damping_lambda': ParameterValue(LaunchConfiguration('velocity_damping_lambda'), value_type=float),
 
-                'publish_tf': True,
+                'publish_tf': False,
                 'odom_frame': 'odom',
                 'base_link_frame': 'base_link',
-                'topic_name': '/odom',
+                'topic_name': '/imu_odom',
                 'rate_hz': 50.0,
                 'timeout_s': 1.0,
 
