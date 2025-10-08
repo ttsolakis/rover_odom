@@ -136,6 +136,20 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('start_teleop')),
     )
 
+    # 7) EKF: Fuses /imu_odom and /wheel_cmd_units_stamped to give improved /ekf_odom 
+    ekf = Node(
+        package='rover_odom',
+        executable='ekf_odom',
+        name='ekf_odom',
+        output='screen',
+        parameters=[{
+            'imu_odom_topic': '/odom',                 # TODO: switch to '/imu_odom' later
+            'wheel_cmd_topic': '/wheel_cmd_units_stamped',
+            'log_every_n': 20,
+            'cmd_buffer_size': 500,
+        }],
+    )
+
     return LaunchDescription([
         start_teleop_arg,
         lidar_launch,
@@ -145,4 +159,5 @@ def generate_launch_description():
         robot_state_pub,
         rviz,
         teleop,
+        ekf,
     ])
