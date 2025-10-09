@@ -17,18 +17,23 @@ def generate_launch_description():
         description='Start rover_teleop in a separate terminal (WASD).'
     )
 
-    # 1) LiDAR driver
-    sllidar_pkg = get_package_share_directory('sllidar_ros2')
-    lidar_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(sllidar_pkg, 'launch', 'sllidar_c1_launch.py')
-        ),
-        launch_arguments={
-            'serial_port': '/dev/rplidar',
-            'serial_baudrate': '460800',
-            'frame_id': 'lidar_link'
-        }.items()
-    )
+    start_logger_arg = DeclareLaunchArgument(
+    'start_logger', default_value='true',
+    description='Open a separate terminal for cmd_yaw_logger.'
+)
+
+    # # 1) LiDAR driver
+    # sllidar_pkg = get_package_share_directory('sllidar_ros2')
+    # lidar_launch = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(
+    #         os.path.join(sllidar_pkg, 'launch', 'sllidar_c1_launch.py')
+    #     ),
+    #     launch_arguments={
+    #         'serial_port': '/dev/rplidar',
+    #         'serial_baudrate': '460800',
+    #         'frame_id': 'lidar_link'
+    #     }.items()
+    # )
 
     # 2) IMU → Odometry (include your parameterized launch)
     rover_pkg = get_package_share_directory('rover_odom')
@@ -64,61 +69,61 @@ def generate_launch_description():
         }.items()
     )
 
-    # 2) slam_toolbox
-    slam = Node(
-        package='slam_toolbox',
-        executable='sync_slam_toolbox_node',
-        name='slam_toolbox',
-        output='screen',
-        parameters=[{
-            'use_sim_time': False,
-            'base_frame': 'base_link',
-            'odom_frame': 'odom',
-            'map_frame': 'map',
-            'scan_topic': '/scan',
-            'use_odometry': False,
-        }]
-    )
+    # # 2) slam_toolbox
+    # slam = Node(
+    #     package='slam_toolbox',
+    #     executable='sync_slam_toolbox_node',
+    #     name='slam_toolbox',
+    #     output='screen',
+    #     parameters=[{
+    #         'use_sim_time': False,
+    #         'base_frame': 'base_link',
+    #         'odom_frame': 'odom',
+    #         'map_frame': 'map',
+    #         'scan_topic': '/scan',
+    #         'use_odometry': False,
+    #     }]
+    # )
 
-    # 3) Lifecycle manager to auto-configure/activate slam_toolbox
-    lifecycle_manager = Node(
-        package='nav2_lifecycle_manager',
-        executable='lifecycle_manager',
-        name='lifecycle_manager_slam',
-        output='screen',
-        parameters=[{
-            'use_sim_time': False,
-            'autostart': True,
-            'node_names': ['slam_toolbox'],
-        }]
-    )
+    # # 3) Lifecycle manager to auto-configure/activate slam_toolbox
+    # lifecycle_manager = Node(
+    #     package='nav2_lifecycle_manager',
+    #     executable='lifecycle_manager',
+    #     name='lifecycle_manager_slam',
+    #     output='screen',
+    #     parameters=[{
+    #         'use_sim_time': False,
+    #         'autostart': True,
+    #         'node_names': ['slam_toolbox'],
+    #     }]
+    # )
 
-    # 4) Robot State Publisher for the URDF
-    urdf_path  = PathJoinSubstitution([FindPackageShare('rover_odom'), 'urdf', 'rover.urdf.xacro'])
-    xacro_exec = FindExecutable(name='xacro')
-    robot_state_pub = Node(
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        name='robot_state_publisher',
-        parameters=[{
-            # Use ParameterValue to force string type, and build the command with an explicit space
-            'robot_description': ParameterValue(
-                Command([xacro_exec, ' ', urdf_path]),
-                value_type=str
-            )
-        }],
-        output='screen'
-    )
+    # # 4) Robot State Publisher for the URDF
+    # urdf_path  = PathJoinSubstitution([FindPackageShare('rover_odom'), 'urdf', 'rover.urdf.xacro'])
+    # xacro_exec = FindExecutable(name='xacro')
+    # robot_state_pub = Node(
+    #     package='robot_state_publisher',
+    #     executable='robot_state_publisher',
+    #     name='robot_state_publisher',
+    #     parameters=[{
+    #         # Use ParameterValue to force string type, and build the command with an explicit space
+    #         'robot_description': ParameterValue(
+    #             Command([xacro_exec, ' ', urdf_path]),
+    #             value_type=str
+    #         )
+    #     }],
+    #     output='screen'
+    # )
 
-    # 5) RViz
-    rviz_config = os.path.join(get_package_share_directory('rover_odom'), 'rviz', 'rover_mapping.rviz')
-    rviz = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        output='screen',
-        arguments=['-d', rviz_config]
-    )
+    # # 5) RViz
+    # rviz_config = os.path.join(get_package_share_directory('rover_odom'), 'rviz', 'rover_mapping.rviz')
+    # rviz = Node(
+    #     package='rviz2',
+    #     executable='rviz2',
+    #     name='rviz2',
+    #     output='screen',
+    #     arguments=['-d', rviz_config]
+    # )
 
     # 6) Teleop (WASD) in a separate terminal so it can read keys
     #    Requires a terminal emulator; change to xterm/konsole/kitty if you prefer.
@@ -136,32 +141,50 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('start_teleop')),
     )
 
-    # 7) EKF: Fuses /imu_odom and /wheel_cmd_units_stamped to give improved /ekf_odom 
-    ekf = Node(
-        package='rover_odom',
-        executable='ekf_odom',
-        name='ekf_odom',
-        output='screen',
-        parameters=[{
-            'imu_odom_topic': '/imu_odom',
-            'wheel_cmd_topic': '/wheel_cmd_units_stamped',
-            'ekf_odom': '/ekf_odom',
-            'publish_tf': True,
-            'odom_frame': 'odom',
-            'base_link_frame': 'base_link',
-            'log_every_n': 20,
-            'cmd_buffer_size': 500,
-        }],
-    )
+    # # 7) EKF: Fuses /imu_odom and /wheel_cmd_units_stamped to give improved /ekf_odom 
+    # ekf = Node(
+    #     package='rover_odom',
+    #     executable='ekf_odom',
+    #     name='ekf_odom',
+    #     output='screen',
+    #     parameters=[{
+    #         'imu_odom_topic': '/imu_odom',
+    #         'wheel_cmd_topic': '/wheel_cmd_units_stamped',
+    #         'ekf_odom': '/ekf_odom',
+    #         'publish_tf': True,
+    #         'odom_frame': 'odom',
+    #         'base_link_frame': 'base_link',
+    #         'log_every_n': 20,
+    #         'cmd_buffer_size': 500,
+    #     }],
+    # )
+
+    # 8) Data Logger to identify omega=omega(cmd)
+    logger_term = ExecuteProcess(
+    cmd=[
+        'gnome-terminal', '--', 'bash', '-lc',
+        # print a header, then run the node
+        'printf "L_cmd\tR_cmd\twz_mean_twist\n"; '
+        'ros2 run rover_odom cmd_yaw_logger '
+        '--ros-args '
+        '-p imu_topic:=/imu_odom '
+        '-p cmd_topic:=/wheel_cmd_units_stamped'
+    ],
+    output='screen',
+    condition=IfCondition(LaunchConfiguration('start_logger')),
+)
+
 
     return LaunchDescription([
         start_teleop_arg,
-        lidar_launch,
+        start_logger_arg,
+        # lidar_launch,
         imu_odom_launch,
-        slam,
-        lifecycle_manager,
-        robot_state_pub,
-        rviz,
+        # slam,
+        # lifecycle_manager,
+        # robot_state_pub,
+        # rviz,
         teleop,
-        ekf,
+        # ekf,
+        logger_term,
     ])

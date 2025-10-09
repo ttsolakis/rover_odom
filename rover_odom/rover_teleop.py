@@ -46,22 +46,16 @@ class RoverTeleop(Node):
 
         # --- Parameters ---
         self.declare_parameter('http_url', 'http://192.168.4.1/js')
-        self.declare_parameter('rate_hz', 20.0)            # resend/publish rate
-        self.declare_parameter('timeout_s', 0.5)
+        self.declare_parameter('rate_hz', 50.0)            # resend/publish rate
+        self.declare_parameter('timeout_s', 0.5)           # HTTP request timeout: if an HTTP call takes longer than this, it errors and is ignored.
         self.declare_parameter('send_http', True)          # set False to test without rover
 
-        # command magnitudes (device units, spec ~ ±0.5)
-        self.declare_parameter('forward_unit', 0.2)
-        self.declare_parameter('reverse_unit', 0.2)
-        self.declare_parameter('turn_unit', 0.1)
-        self.declare_parameter('max_unit', 0.5)
-
-        # how long a pressed command is considered "applied"
-        self.declare_parameter('max_apply_s', 0.6)         # tune to match rover hold time
-
-        # For cmd_vel estimation (optional)
-        self.declare_parameter('unit_to_mps', 0.5)         # 1.0 unit ≈ 0.5 m/s (tune later)
-        self.declare_parameter('track_width', 0.20)        # meters
+        # Command paramters (device units, spec ~ ±0.5)
+        self.declare_parameter('forward_unit', 0.2)       # forward command unit
+        self.declare_parameter('reverse_unit', 0.2)       # reverse command unit
+        self.declare_parameter('turn_unit', 0.4)          # turn command unit  
+        self.declare_parameter('max_unit', 0.5)           # clamp max command to this         
+        self.declare_parameter('max_apply_s', 1.0)        # how long a pressed command is applied: after this send zeros
 
         # --- Read params ---
         self.http_url     = self.get_parameter('http_url').value
@@ -73,8 +67,15 @@ class RoverTeleop(Node):
         self.t_unit       = float(self.get_parameter('turn_unit').value)
         self.max_unit     = float(self.get_parameter('max_unit').value)
         self.max_apply_s  = float(self.get_parameter('max_apply_s').value)
-        self.unit_to_mps  = float(self.get_parameter('unit_to_mps').value)
-        self.track_width  = float(self.get_parameter('track_width').value)
+
+        # --- Empirical cmd→ω fits (from your experiments) ---
+        # Straight line (both wheels same sign)
+        self.m_pos = 42.6750; self.b_pos = -2.3062   # cmd > 0
+        self.m_neg = 41.4667; self.b_neg = +2.2750   # cmd < 0
+
+        # Spin-in-place (opposite signs, use magnitude fit then assign signs)
+        self.m_left  = 25.1242; self.b_left  = -9.2430   # left turn: (L<0, R>0)
+        self.m_right = -24.2625; self.b_right = +8.5188  # right turn: (L>0, R<0)
 
         # --- Publishers ---
         self.pub_units        = self.create_publisher(Float32MultiArray, '/wheel_cmd_units', 10)
@@ -123,27 +124,59 @@ class RoverTeleop(Node):
             # keep low-noise; promote to warn if needed
             self.get_logger().debug(f"HTTP error: {e}")
 
+    def _straight_map(self, u: float) -> float:
+        """Per-wheel ω for straight motion (cmd u for that wheel)."""
+        if u > 0.0:
+            return self.m_pos * u + self.b_pos
+        elif u < 0.0:
+            return self.m_neg * u + self.b_neg
+        else:
+            return 0.0
+
+    def _cmd_to_wheel_omega(self, L: float, R: float) -> tuple[float, float]:
+        """
+        Map (L,R) command units → (ω_L, ω_R) in rad/s using piecewise linear fits.
+        - Straight (same sign): use straight-line fits per wheel/sign.
+        - Spin (opposite sign): use spin fits by magnitude, then apply wheel signs.
+        """
+        eps = 1e-6
+        if abs(L) < eps and abs(R) < eps:
+            return 0.0, 0.0
+
+        # Same sign → straight (forward/back)
+        if L * R >= 0.0:
+            return self._straight_map(L), self._straight_map(R)
+
+        # Opposite signs → spin-in-place
+        cmd_mag = max(abs(L), abs(R))
+
+        # Left turn: L<0, R>0
+        if (L < 0.0 and R > 0.0):
+            mag = self.m_left * cmd_mag + self.b_left
+            mag = max(0.0, abs(mag))  # ensure non-negative magnitude
+            return -mag, +mag
+
+        # Right turn: L>0, R<0
+        mag = self.m_right * cmd_mag + self.b_right
+        mag = max(0.0, abs(mag))
+        return +mag, -mag
+
     def _publish_ros(self, L, R, duration_s):
+        # Convert commands → wheel speeds (rad/s)
+        omega_L, omega_R = self._cmd_to_wheel_omega(L, R)
+
+        # (Keeps topic names; contents are now ω in rad/s)
         msg_units = Float32MultiArray()
-        msg_units.data = [float(L), float(R)]
+        msg_units.data = [float(omega_L), float(omega_R)]
         self.pub_units.publish(msg_units)
 
         v = Vector3Stamped()
         v.header.stamp = self.get_clock().now().to_msg()
-        v.vector.x = float(L)
-        v.vector.y = float(R)
-        v.vector.z = float(duration_s)  # since last change
+        v.vector.x = float(omega_L)    # rad/s
+        v.vector.y = float(omega_R)    # rad/s
+        v.vector.z = float(duration_s) # since last change
         self.pub_units_stamp.publish(v)
 
-        # estimated Twist (very rough)
-        vL = L * self.unit_to_mps
-        vR = R * self.unit_to_mps
-        vx = 0.5 * (vL + vR)
-        wz = (vR - vL) / max(1e-6, self.track_width)
-        tw = Twist()
-        tw.linear.x  = float(vx)
-        tw.angular.z = float(wz)
-        self.pub_cmdvel.publish(tw)
 
     def _set_cmd(self, L, R):
         L = clamp(L, -self.max_unit, self.max_unit)

@@ -64,7 +64,7 @@ class EkfOdomNode(Node):
 
         # Diff-drive model params
         self.declare_parameter('rho', 0.075)             # wheel radius [m]
-        self.declare_parameter('half_track_l', 0.13)     # half track [m]
+        self.declare_parameter('half_track_l', 0.065)    # half track [m]
         self.declare_parameter('unit_to_radps', 8.0)     # wheel rad/s per teleop "unit"
 
         # Process covariance diag (x,y,phi,u,r)
