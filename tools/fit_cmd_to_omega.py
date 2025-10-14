@@ -4,8 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- constants ---
-R = 0.040         # wheel radius [m]
-DT = 1.0          # straight-line sample duration [s]
+R = 0.040           # wheel radius [m]
+DT = 1.0            # straight-line sample duration [s]
 HALF_TRACK = 0.064  # half track [m] (given)
 YAW_TO_WHEEL = HALF_TRACK / R  # omega_wheel = (l/R) * yaw_rate
 

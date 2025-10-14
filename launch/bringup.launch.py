@@ -17,10 +17,10 @@ def generate_launch_description():
         description='Start rover_teleop in a separate terminal (WASD).'
     )
 
-    start_logger_arg = DeclareLaunchArgument(
-    'start_logger', default_value='true',
-    description='Open a separate terminal for cmd_yaw_logger.'
-)
+    # start_logger_arg = DeclareLaunchArgument(
+    #     'start_logger', default_value='true',
+    #     description='Open a separate terminal for cmd_yaw_logger.'
+    # )
 
     # # 1) LiDAR driver
     # sllidar_pkg = get_package_share_directory('sllidar_ros2')
@@ -135,7 +135,10 @@ def generate_launch_description():
             '--ros-args '
             '-p http_url:=http://192.168.4.1/js '
             '-p rate_hz:=50.0 '
-            '-p max_apply_s:=0.6 '
+            '-p forward_unit:=0.25 '
+            '-p reverse_unit:=0.25 '
+            '-p turn_unit:=0.5 '
+            '-p max_apply_s:=1.0 '
         ],
         output='screen',
         condition=IfCondition(LaunchConfiguration('start_teleop')),
@@ -159,25 +162,25 @@ def generate_launch_description():
     #     }],
     # )
 
-    # 8) Data Logger to identify omega=omega(cmd)
-    logger_term = ExecuteProcess(
-    cmd=[
-        'gnome-terminal', '--', 'bash', '-lc',
-        # print a header, then run the node
-        'printf "L_cmd\tR_cmd\twz_mean_twist\n"; '
-        'ros2 run rover_odom cmd_yaw_logger '
-        '--ros-args '
-        '-p imu_topic:=/imu_odom '
-        '-p cmd_topic:=/wheel_cmd_units_stamped'
-    ],
-    output='screen',
-    condition=IfCondition(LaunchConfiguration('start_logger')),
-)
+#     # 8) Data Logger to identify omega=omega(cmd)
+#     logger_term = ExecuteProcess(
+#     cmd=[
+#         'gnome-terminal', '--', 'bash', '-lc',
+#         # print a header, then run the node
+#         'printf "L_cmd\tR_cmd\twz_mean_twist\n"; '
+#         'ros2 run rover_odom cmd_yaw_logger '
+#         '--ros-args '
+#         '-p imu_topic:=/imu_odom '
+#         '-p cmd_topic:=/wheel_cmd_units_stamped'
+#     ],
+#     output='screen',
+#     condition=IfCondition(LaunchConfiguration('start_logger')),
+# )
 
 
     return LaunchDescription([
         start_teleop_arg,
-        start_logger_arg,
+        # start_logger_arg,
         # lidar_launch,
         imu_odom_launch,
         # slam,
@@ -186,5 +189,5 @@ def generate_launch_description():
         # rviz,
         teleop,
         # ekf,
-        logger_term,
+        # logger_term,
     ])
