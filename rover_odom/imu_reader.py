@@ -129,7 +129,7 @@ class ImuJsonToOdom(Node):
     """
 
     def __init__(self):
-        super().__init__('imu_json_to_odom')
+        super().__init__('imu_reader')
 
         # Declare parameters
         self.declare_parameter('http_url', 'http://192.168.4.1/js')

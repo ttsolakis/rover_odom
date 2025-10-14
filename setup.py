@@ -23,7 +23,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'imu_json_to_odom = rover_odom.imu_json_to_odom:main',
+            'imu_reader = rover_odom.imu_reader:main',
             'rover_teleop = rover_odom.rover_teleop:main',
             'ekf_odom = rover_odom.ekf_odom:main',
             'cmd_yaw_logger = rover_odom.cmd_yaw_logger:main',

@@ -18,8 +18,8 @@ def generate_launch_description():
 
         Node(
             package='rover_odom',
-            executable='imu_json_to_odom',
-            name='imu_json_to_odom',
+            executable='imu_reader',
+            name='imu_reader',
             output='screen',
             parameters=[{
                 'http_url': 'http://192.168.4.1/js',

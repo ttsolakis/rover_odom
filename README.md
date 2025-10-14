@@ -4,7 +4,7 @@ ROS 2 (Jazzy) package for low-cost odometry and mapping. It polls an IMU over HT
 
 **Pipeline**
 ```
-IMU JSON  ──>  imu_json_to_odom  ── /imu_odom ─┐
+IMU JSON  ──>  imu_reader  ── /imu_odom ─┐
                                                 ├─>  ekf_odom  ── /ekf_odom (+ optional TF odom→base_link)
 Wheel cmds ──>  rover_teleop      ─ /wheel_cmd ─┘
 ```
@@ -38,7 +38,7 @@ ros2 launch rover_odom bringup.launch.py start_teleop:=true
 
 ## Nodes
 
-### 1) `imu_json_to_odom`
+### 1) `imu_reader`
 Polls an HTTP endpoint (your IMU) and publishes `nav_msgs/Odometry` on **`/imu_odom`**.  
 Orientation is corrected for IMU mounting; gyro/accel are rotated into `base_link`.
 
@@ -119,7 +119,7 @@ Discrete-time EKF for a diff-drive rover:
 - Covariances: relevant entries mapped from EKF `P`; unused axes set large (e.g., 1e3)
 
 **TF**
-- Prefer **only EKF** to publish `odom→base_link`. Ensure `publish_tf:=False` in `imu_json_to_odom`.
+- Prefer **only EKF** to publish `odom→base_link`. Ensure `publish_tf:=False` in `imu_reader`.
 
 ---
 
@@ -134,7 +134,7 @@ ros2 launch rover_odom bringup.launch.py start_teleop:=true
 What it starts:
 
 1. **SLLidar** driver (`sllidar_ros2`)
-2. **IMU → `/imu_odom`** (`rover_odom/imu_json_to_odom.py`)
+2. **IMU → `/imu_odom`** (`rover_odom/imu_reader.py`)
 3. **EKF** (`rover_odom/ekf_odom.py`) → `/ekf_odom` (+ TF by default)
 4. **slam_toolbox** (sync node) + **nav2_lifecycle_manager** (auto-start)
 5. **robot_state_publisher** with `urdf/rover.urdf.xacro`
