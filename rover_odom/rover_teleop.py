@@ -78,9 +78,7 @@ class RoverTeleop(Node):
         self.m_right = -24.2625; self.b_right = +8.5188  # right turn: (L>0, R<0)
 
         # --- Publishers ---
-        self.pub_units        = self.create_publisher(Float32MultiArray, '/wheel_cmd_units', 10)
-        self.pub_units_stamp  = self.create_publisher(Vector3Stamped, '/wheel_cmd_units_stamped', 10)
-        self.pub_cmdvel       = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.pub_wheel_cmd  = self.create_publisher(Vector3Stamped, '/wheel_cmd', 10)
 
         # --- Command state (protected by lock) ---
         self._lock = Lock()
@@ -165,18 +163,12 @@ class RoverTeleop(Node):
         # Convert commands → wheel speeds (rad/s)
         omega_L, omega_R = self._cmd_to_wheel_omega(L, R)
 
-        # (Keeps topic names; contents are now ω in rad/s)
-        msg_units = Float32MultiArray()
-        msg_units.data = [float(omega_L), float(omega_R)]
-        self.pub_units.publish(msg_units)
-
         v = Vector3Stamped()
         v.header.stamp = self.get_clock().now().to_msg()
         v.vector.x = float(omega_L)    # rad/s
         v.vector.y = float(omega_R)    # rad/s
         v.vector.z = float(duration_s) # since last change
-        self.pub_units_stamp.publish(v)
-
+        self.pub_wheel_cmd.publish(v)  # in rad/s
 
     def _set_cmd(self, L, R):
         L = clamp(L, -self.max_unit, self.max_unit)

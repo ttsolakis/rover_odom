@@ -4,9 +4,9 @@ ROS 2 (Jazzy) package for low-cost odometry and mapping. It polls an IMU over HT
 
 **Pipeline**
 ```
-IMU JSON  ──>  imu_reader  ── /imu_odom ─┐
-                                                ├─>  ekf_odom  ── /ekf_odom (+ optional TF odom→base_link)
-Wheel cmds ──>  rover_teleop      ─ /wheel_cmd ─┘
+IMU JSON  ──>  imu_reader ──── /imu_odom ─┐
+                                          ├─>  ekf_odom  ── /ekf_odom (+ optional TF odom→base_link)
+Wheel cmds ─>  rover_teleop ─ /wheel_cmd ─┘
 ```
 
 ---
