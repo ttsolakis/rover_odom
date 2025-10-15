@@ -22,6 +22,7 @@ WASD control:
   SPACE : STOP
   h : help
   q : quit
+  1-5 : speed levels (1=slow, 5=fast)
 
 This node:
   • resends the last command at 'rate_hz'
@@ -51,9 +52,6 @@ class RoverTeleop(Node):
         self.declare_parameter('send_http', True)          # set False to test without rover
 
         # Command paramters (device units, spec ~ ±0.5)
-        self.declare_parameter('forward_unit', 0.2)       # forward command unit
-        self.declare_parameter('reverse_unit', 0.2)       # reverse command unit
-        self.declare_parameter('turn_unit', 0.4)          # turn command unit  
         self.declare_parameter('max_unit', 0.5)           # clamp max command to this         
         self.declare_parameter('max_apply_s', 1.0)        # how long a pressed command is applied: after this send zeros
 
@@ -62,11 +60,29 @@ class RoverTeleop(Node):
         self.rate_hz      = float(self.get_parameter('rate_hz').value)
         self.timeout_s    = float(self.get_parameter('timeout_s').value)
         self.send_http    = bool(self.get_parameter('send_http').value)
-        self.f_unit       = float(self.get_parameter('forward_unit').value)
-        self.r_unit       = float(self.get_parameter('reverse_unit').value)
-        self.t_unit       = float(self.get_parameter('turn_unit').value)
         self.max_unit     = float(self.get_parameter('max_unit').value)
         self.max_apply_s  = float(self.get_parameter('max_apply_s').value)
+
+        # --- Fixed base magnitudes (used only to define ratios) ---
+        self._base_f = 0.5
+        self._base_r = 0.5
+        self._base_t = 0.5
+
+        # Preserve proportions among F/R/T and scale by selected level
+        _max_base = max(abs(self._base_f), abs(self._base_r), abs(self._base_t), 1e-6)
+        self._ratio_f = self._base_f / _max_base
+        self._ratio_r = self._base_r / _max_base
+        self._ratio_t = self._base_t / _max_base
+
+        # Number keys pick absolute magnitudes (0.1 .. 0.5)
+        self._levels_abs = {'1': 0.1, '2': 0.2, '3': 0.3, '4': 0.4, '5': 0.5}
+        self._current_level = '3'  # default
+
+        # Active units (initialized by level)
+        self.f_unit = 0.0
+        self.r_unit = 0.0
+        self.t_unit = 0.0
+        self._apply_level(self._current_level)
 
         # --- Empirical cmd→ω fits (from your experiments) ---
         # Straight line (both wheels same sign)
@@ -96,6 +112,25 @@ class RoverTeleop(Node):
 
         self.get_logger().info("WASD teleop ready. Focus terminal and use keys. Press 'h' for help.\n")
         print(HELP)
+
+    # ========== Apply level of cmd ==========
+    def _apply_level(self, key: str):
+        """Set units so that the largest of (f,r,t) equals the chosen absolute level, preserving ratios."""
+        L = self._levels_abs[key]  # absolute target in [0, 0.5]
+        # preserve F/R/T proportions from the base units
+        f = L * self._ratio_f
+        r = L * self._ratio_r
+        t = L * self._ratio_t
+
+        # clamp to max_unit (symmetric)
+        self.f_unit = clamp(f, -self.max_unit, self.max_unit)
+        self.r_unit = clamp(r, -self.max_unit, self.max_unit)
+        self.t_unit = clamp(t, -self.max_unit, self.max_unit)
+
+        self._current_level = key
+        self.get_logger().info(
+            f"[level {key}] target={L:.3f} → forward={self.f_unit:.3f}, reverse={self.r_unit:.3f}, turn={self.t_unit:.3f}"
+        )
 
     # ========== Timer heartbeat ==========
     def _tick(self):
@@ -203,6 +238,8 @@ class RoverTeleop(Node):
                     self._set_cmd(-self.t_unit, +self.t_unit)
                 elif ch in ('d', 'D'):
                     self._set_cmd(+self.t_unit, -self.t_unit)
+                elif ch in ('1','2','3','4','5'):
+                    self._apply_level(ch)
                 # else ignore
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)

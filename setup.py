@@ -16,9 +16,6 @@ data_files = [
     (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     (os.path.join('share', package_name, 'rviz'),   glob('rviz/*.rviz')),
     (os.path.join('share', package_name, 'urdf'),   glob('urdf/*')),
-
-    # Tools (installed to share so your node can write CSVs there)
-    (os.path.join('share', package_name, 'tools'),  glob('tools/*')),
 ]
 
 setup(

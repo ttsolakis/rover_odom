@@ -136,9 +136,6 @@ def generate_launch_description():
             '--ros-args '
             '-p http_url:=http://192.168.4.1/js '
             '-p rate_hz:=50.0 '
-            '-p forward_unit:=0.25 '
-            '-p reverse_unit:=0.25 '
-            '-p turn_unit:=0.5 '
             '-p max_apply_s:=1.0 '
         ],
         output='screen',
