@@ -140,6 +140,7 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('gyro_is_deg', True)
         self.declare_parameter('accel_is_mg', True)
         self.declare_parameter('auto_level', True)
+        self.declare_parameter('raw_accel_debug_mode', False)
         self.declare_parameter('level_samples', 50)
         self.declare_parameter('level_gyro_thresh', 0.1)  
         self.declare_parameter('level_accel_thresh', 0.2)
@@ -154,7 +155,9 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('topic_name', '/imu_odom')
         self.declare_parameter('rate_hz', 50.0)
         self.declare_parameter('timeout_s', 1.0)
-        self.declare_parameter('mounting_rpy_deg', [0.0, 0.0, 180.0])
+        self.declare_parameter('mount_roll_deg', 0.0)
+        self.declare_parameter('mount_pitch_deg', 0.0)
+        self.declare_parameter('mount_yaw_deg', 180.0)
         self.declare_parameter('apply_mounting_tf_in_odom', True)
 
         # Read parameters
@@ -166,6 +169,7 @@ class ImuJsonToOdom(Node):
         self.gyro_is_deg = self.get_parameter('gyro_is_deg').value
         self.accel_is_mg = self.get_parameter('accel_is_mg').value
         self.auto_level = bool(self.get_parameter('auto_level').value)
+        self.raw_accel_debug_mode = bool(self.get_parameter('raw_accel_debug_mode').value)
         self.level_samples = int(self.get_parameter('level_samples').value)
         self.level_gyro_thresh = float(self.get_parameter('level_gyro_thresh').value)
         self.level_accel_thresh = float(self.get_parameter('level_accel_thresh').value)
@@ -180,8 +184,13 @@ class ImuJsonToOdom(Node):
         self.topic_name = self.get_parameter('topic_name').value
         self.rate_hz = float(self.get_parameter('rate_hz').value)
         self.timeout_s = float(self.get_parameter('timeout_s').value)
-        self.mounting_rpy_deg = list(self.get_parameter('mounting_rpy_deg').value)
+        self.mount_roll_deg = float(self.get_parameter('mount_roll_deg').value)
+        self.mount_pitch_deg = float(self.get_parameter('mount_pitch_deg').value)
+        self.mount_yaw_deg = float(self.get_parameter('mount_yaw_deg').value)
+        self.mounting_rpy_deg = [self.mount_roll_deg, self.mount_pitch_deg, self.mount_yaw_deg] 
         self.apply_mounting_tf = bool(self.get_parameter('apply_mounting_tf_in_odom').value)
+
+        self.get_logger().info(f"raw_accel_debug_mode: {self.raw_accel_debug_mode}. Publishing accelerations for debugging...")
 
         # calibration buffers/state
         self.g = 9.80665
@@ -334,6 +343,11 @@ class ImuJsonToOdom(Node):
             else:
                 qx, qy, qz, qw = q_imu
 
+            # Store raw acceleration data for debugging
+            ax_raw = ax
+            ay_raw = ay
+            az_raw = az
+
             # --- INTEGRATION: get linear velocity from acceleration (simple approx, no drift correction) ---
 
             # Learn accel bias on x,y while still (reduces integration drift)
@@ -407,10 +421,14 @@ class ImuJsonToOdom(Node):
         odom.pose.pose.orientation.z = qz
         odom.pose.pose.orientation.w = qw
 
-        # (STEP 3 will compute linear twist from integrated accel)
-        odom.twist.twist.linear.x = self.vx
-        odom.twist.twist.linear.y = self.vy
-        odom.twist.twist.linear.z = 0.0
+        if self.raw_accel_debug_mode:
+            odom.twist.twist.linear.x = ax_raw
+            odom.twist.twist.linear.y = ay_raw
+            odom.twist.twist.linear.z = az_raw
+        else:   
+            odom.twist.twist.linear.x = self.vx
+            odom.twist.twist.linear.y = self.vy
+            odom.twist.twist.linear.z = 0.0
 
         odom.twist.twist.angular.x = gx
         odom.twist.twist.angular.y = gy
