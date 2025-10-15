@@ -43,7 +43,7 @@ def to_time_vector(sec_col, nsec_col):
 def main():
     # Resolve repo tools dir (works whether you run from repo root or anywhere)
     # This script lives in slam_ws/src/rover_odom/tools/
-    here = os.path.abspath(os.path.dirname(_file_))
+    here = os.path.abspath(os.path.dirname(__file__))
     tools_dir = here
 
     # Parse args
@@ -94,12 +94,9 @@ def main():
     dt = np.clip(dt, 0.0, 0.2)
 
     # Naive Euler integration
-    v_imu = np.cumsum(imu_ax * dt)
-
-    # (Optional) remove initial bias drift by subtracting mean of first ~0.5s accel
-    # n0 = max(1, int(0.5 / np.median(dt[1:]) if len(dt) > 1 else 1))
-    # bias = imu_ax[:n0].mean()
-    # v_imu = np.cumsum((imu_ax - bias) * dt)
+    v_imu = np.zeros_like(imu_ax)
+    for i in range(1, len(t_imu)):
+        v_imu[i] = v_imu[i-1] + imu_ax[i-1] * dt[i-1]
 
     # --- Plot ---
     plt.figure()
@@ -126,5 +123,5 @@ def main():
         )
         print(f"[info] Saved vectors -> {out_npz}")
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
