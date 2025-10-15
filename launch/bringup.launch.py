@@ -60,7 +60,7 @@ def generate_launch_description():
             'zupt_accel_thresh': '0.2',
             'filter_alpha': '0.0',
             'velocity_damping_lambda': '0.05',
-
+            
             'publish_tf': 'false',
             'odom_frame': 'odom',
             'base_link_frame': 'base_link',
@@ -179,6 +179,26 @@ def generate_launch_description():
 # )
 
 
+    # 9) Data Logger to identify velocities from IMU accelerations
+    tools_dir = os.path.expanduser('~/slam_ws/src/rover_odom/tools')
+    imu_cmd_logger = Node(
+        package='rover_odom',
+        executable='imu_cmd_logger',
+        name='imu_cmd_logger',
+        output='screen',
+        parameters=[{
+            'imu_topic': '/imu_odom',
+            'cmd_topic': '/wheel_cmd',
+            'output_topic': '/imu_cmd_aligned',
+            'queue_size': 200,
+            'sync_slop_s': 0.03,
+            'write_csv': True,
+            'csv_dir': tools_dir,      
+            'csv_basename': 'imu_cmd_aligned',
+        }]
+    )
+
+
     return LaunchDescription([
         start_teleop_arg,
         # start_logger_arg,
@@ -191,4 +211,5 @@ def generate_launch_description():
         teleop,
         # ekf,
         # logger_term,
+        imu_cmd_logger,
     ])
