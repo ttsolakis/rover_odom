@@ -96,7 +96,8 @@ def main():
     # Naive Euler integration
     v_imu = np.zeros_like(imu_ax)
     for i in range(1, len(t_imu)):
-        v_imu[i] = v_imu[i-1] + imu_ax[i-1] * dt[i-1]
+        v_imu[i] = imu_ax[i]
+        # v_imu[i] = v_imu[i-1] + imu_ax[i-1] * dt[i-1]
 
     # --- Plot ---
     plt.figure()

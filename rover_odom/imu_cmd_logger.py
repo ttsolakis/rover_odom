@@ -15,12 +15,14 @@ class ImuCmdAligner(Node):
     def __init__(self):
         super().__init__('imu_cmd_aligner')
 
-        # Resolve a good default CSV directory inside the installed package share (…/share/rover_odom/tools)
+        # Resolve a good default CSV directory inside the installed package share (…/share/rover_odom/tools/velocity_from_imu_identification)
         try:
             from ament_index_python.packages import get_package_share_directory
-            default_csv_dir = os.path.join(get_package_share_directory('rover_odom'), 'tools')
+            default_csv_dir = os.path.join(get_package_share_directory('rover_odom'), 'velocity_from_imu_identification')
         except Exception:
             default_csv_dir = os.path.expanduser('~/.ros')
+
+        os.makedirs(default_csv_dir, exist_ok=True)
 
         # Parameters
         self.declare_parameter('imu_topic', '/imu_odom')

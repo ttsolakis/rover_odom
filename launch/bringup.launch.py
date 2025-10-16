@@ -177,7 +177,7 @@ def generate_launch_description():
 
 
     # 9) Data Logger to identify velocities from IMU accelerations
-    tools_dir = os.path.expanduser('~/slam_ws/src/rover_odom/tools')
+    tools_dir = os.path.expanduser('~/slam_ws/src/rover_odom/tools/velocity_from_imu_identification')
     imu_cmd_logger = Node(
         package='rover_odom',
         executable='imu_cmd_logger',
