@@ -25,8 +25,14 @@ import glob
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 R_WHEEL = 0.040  # meters
+
+def darken(color_hex, factor=0.6):
+    """Return a darker shade of color_hex (0<f<1)."""
+    r, g, b = mcolors.to_rgb(color_hex)
+    return (r*factor, g*factor, b*factor)
 
 def find_latest_csv(tools_dir: str) -> str:
     pattern = os.path.join(tools_dir, "imu_cmd_aligned_*.csv")
@@ -178,8 +184,8 @@ def filter_and_unbias_acceleration(time_imu_seconds, accel_x_mps2, window_length
 
     # ---- Bias learning (windowed mean while stationary) ----
     hard_zero_when_stationary = True                 # force accel to 0 during ZUPT after bias removal
-    stationary_abs_threshold_mps2 = 0.0001             # |a_filtered| must be below this to consider “quiet”
-    stationary_min_consecutive_samples = 5           # need this many quiet samples to declare ZUPT
+    stationary_abs_threshold_mps2 = 0.1              # |a_filtered| must be below this to consider “quiet”
+    stationary_min_consecutive_samples = 10          # need this many quiet samples to declare ZUPT
 
     # Size of the averaging window in *seconds*; convert to samples using nominal dt
     bias_window_samples = stationary_min_consecutive_samples
@@ -308,10 +314,6 @@ def main():
     cmd_vy = df["cmd_vy"].to_numpy(dtype=np.float64)
     cmd_vz = df["cmd_vz"].to_numpy(dtype=np.float64)
 
-    ma_ax = pd.Series(imu_ax).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
-    ma_ay = pd.Series(imu_ay).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
-    ma_az = pd.Series(imu_az).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
-
     # Print brief summary so you can poke around later if needed
     print(f"[info] N = {len(imu_ax)} samples")
     print(f"[info] t range: {t_plot[0]:.3f} .. {t_plot[-1]:.3f} s")
@@ -320,19 +322,24 @@ def main():
     # --- 1) Velocity from wheel command (assume cmd_vx is angular rate [rad/s]) ---
     v_cmd = R_WHEEL * cmd_vx  # m/s
 
-    # --- 2) Velocity from IMU acceleration via simple integration ---
+    # --- 2) Acceleration post-processing
     filtered_acceleration, bias_corrected_acceleration = filter_and_unbias_acceleration(t_imu, imu_ax, acceleration_filtering=True)
+    ma_ax = pd.Series(imu_ax).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
+    ma_ax_filtered = pd.Series(filtered_acceleration).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
+    ma_ax_unbiased = pd.Series(bias_corrected_acceleration).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
 
+    # --- 3) Velocity from IMU acceleration via simple integration ---
     v_imu_filtered = estimate_velocity_from_acceleration(t_imu, filtered_acceleration, cmd_vx, wheel_radius_m=R_WHEEL)
-
     v_imu_unbiased = estimate_velocity_from_acceleration(t_imu, bias_corrected_acceleration, cmd_vx, wheel_radius_m=R_WHEEL)
 
     # --- Plot ---
     plt.figure()
-    plt.plot(t_plot, imu_ax, linewidth=0.2, label="raw acc")
-    plt.plot(t_plot, ma_ax, linewidth=0.2, label="raw acc (MA)")
-    # plt.plot(t_plot, filtered_acceleration, linewidth=0.2, label="filtered_acc")
-    # plt.plot(t_plot, bias_corrected_acceleration, linewidth=0.2, label="bias_corrected_acc", linestyle='--')
+    plt.plot(t_plot, imu_ax, color="#1f77b4", alpha=0.7, linewidth=0.2, label="raw acceleration")
+    plt.plot(t_plot, ma_ax, color=darken("#1f77b4", factor=0.6), linewidth=0.2)
+    plt.plot(t_plot, filtered_acceleration, color="#ff7f0e", alpha=0.7, linewidth=0.2, label="filtered acceleration")
+    plt.plot(t_plot, ma_ax_filtered, color=darken("#ff7f0e", factor=0.6), linewidth=0.2)
+    plt.plot(t_plot, bias_corrected_acceleration, color="#2ca02c", alpha=0.7, linewidth=0.2, label="unbiased acceleration", linestyle='--')
+    plt.plot(t_plot, ma_ax_unbiased, color=darken("#2ca02c", factor=0.6), linewidth=0.2, linestyle='--')
     plt.xlabel("time (s)")
     plt.ylabel("acceleration:x (m/s²)")
     plt.title("Longitudinal Acceleration: IMU")
