@@ -252,9 +252,10 @@ def estimate_velocity_from_acceleration(time_imu_seconds, filtered_acceleration,
     velocity_estimate_mps = np.zeros(len(filtered_acceleration))
 
     # Main loop: integrate acceleration to get velocity
+    constant_velocity_counter = 0
     for i in range(1, len(filtered_acceleration)):
         
-        # --- 2) ZUPT gating ---
+        # --- 1) ZUPT gating ---
         zupt_speed_threshold_mps=0.01
         velocity_cmd_linear_mps = wheel_radius_m * cmd_wheel_rate_rad_s[i]
         previous_velocity_cmd_linear_mps = wheel_radius_m * cmd_wheel_rate_rad_s[i-1]
@@ -265,15 +266,29 @@ def estimate_velocity_from_acceleration(time_imu_seconds, filtered_acceleration,
         if stationary:
             velocity_estimate_mps[i-1] = 0.0
             velocity_estimate_mps[i]   = 0.0
+            constant_velocity_counter = 0
             continue  # freeze integrator this sample
 
-        # --- 3) Integration ---
-        dt = time_imu_seconds[i] - time_imu_seconds[i-1]
-        velocity_estimate_mps[i] =  velocity_estimate_mps[i-1] + filtered_acceleration[i-1] * dt
+        # --- 2) CUPT gating ---
+        constant_velocity_threshold = 10
+
+        constant_velocity_command = (abs(wheel_radius_m * cmd_wheel_rate_rad_s[i] - wheel_radius_m * cmd_wheel_rate_rad_s[i-1]) <= 0.01)
+        if constant_velocity_command:
+            constant_velocity_counter += 1
+        else:
+            constant_velocity_counter = 0
+
+        if constant_velocity_counter >= constant_velocity_threshold:
+            velocity_estimate_mps[i-1] = velocity_cmd_linear_mps
+            velocity_estimate_mps[i] = velocity_cmd_linear_mps
+            constant_velocity_counter = 0
+            continue
+
+        # --- 3) Trapezoidal Integration ---
+        dt = time_imu_seconds[i] - time_imu_seconds[i-1]     
+        velocity_estimate_mps[i] =  velocity_estimate_mps[i-1] + 0.5*(filtered_acceleration[i] + filtered_acceleration[i-1]) * dt
 
     return velocity_estimate_mps
-
-
 
 def main():
     # Resolve repo tools dir (works whether you run from repo root or anywhere)
