@@ -141,10 +141,10 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('accel_is_mg', True)
         self.declare_parameter('auto_level', True)
         self.declare_parameter('raw_accel_debug_mode', False)
-        self.declare_parameter('level_samples', 50)
+        self.declare_parameter('level_samples', 100)
         self.declare_parameter('level_gyro_thresh', 0.1)  
         self.declare_parameter('level_accel_thresh', 0.2)
-        self.declare_parameter('bias_samples', 50)
+        self.declare_parameter('bias_samples', 100)
         self.declare_parameter('zupt_gyro_thresh', 0.1)
         self.declare_parameter('zupt_accel_thresh', 0.2)
         self.declare_parameter('filter_alpha', 0.1) 
@@ -198,6 +198,7 @@ class ImuJsonToOdom(Node):
         self._acc_sum = [0.0, 0.0, 0.0]  # sum of raw accel (before any rotation) in m/s^2
         self._calib_done = (not self.auto_level)
         self.q_align = (0.0, 0.0, 0.0, 1.0)  # imu_link -> "ideal imu" (Z up) tilt correction
+        self.accel_residual_thresh = 0.05  # m/s² threshold for large residual warning
 
         # Integration state (planar)
         self.prev_time_sec = None
@@ -296,12 +297,11 @@ class ImuJsonToOdom(Node):
                 ay = 9.80665e-3 * ay  # convert mg to m/s²
                 az = 9.80665e-3 * az  # convert mg to m/s²
 
-
             # --- AUTO-LEVEL: estimate q_align from avg gravity vector (IMU must be stationary) ---
             if not self._calib_done and self.auto_level:
                 # require small gyro magnitude to assume "still"
                 if self._calib_count == 0:
-                    self.get_logger().info("Auto-level: hold still for ~1–2s...")
+                    self.get_logger().info(f"Auto-level: hold still for ~{1/(self.rate_hz)*self.level_samples} sec...")
                     
                 gyro_norm = math.sqrt(gx*gx + gy*gy + gz*gz)
                 a_norm = math.sqrt(ax*ax + ay*ay + az*az)
@@ -348,8 +348,11 @@ class ImuJsonToOdom(Node):
             ay_raw = ay
             az_raw = az
 
-            # --- INTEGRATION: get linear velocity from acceleration (simple approx, no drift correction) ---
+            # Warning that ax has a big residual:
+            if not self._calib_done and self.auto_level and abs(ax_raw) > self.accel_residual_thresh:
+                 self.get_logger().warning(f"Large residual detected in ax: {ax_raw:.4f} m/s²")
 
+            # --- INTEGRATION: get linear velocity from acceleration (simple approx, no drift correction) ---
             # Learn accel bias on x,y while still (reduces integration drift)
             if self._calib_done and not self._bias_done and self.auto_level:
                 az_lin = az - self.g  # gravity-compensated vertical
@@ -357,7 +360,7 @@ class ImuJsonToOdom(Node):
                 alin_norm = math.sqrt(ax*ax + ay*ay + az_lin*az_lin)
                 is_still_zupt = (gyro_norm < self.zupt_gyro_thresh) and (alin_norm < self.zupt_accel_thresh)
                 if self._bias_count == 0:
-                    self.get_logger().info("Bias computation: hold still for ~1–2s...")
+                    self.get_logger().info(f"Bias computation: hold still for ~{1/(self.rate_hz)*self.bias_samples} sec...")
 
                 if is_still_zupt:
                     self._bias_ax_sum += ax

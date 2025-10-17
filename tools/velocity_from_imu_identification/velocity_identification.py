@@ -178,7 +178,7 @@ def filter_and_unbias_acceleration(time_imu_seconds, accel_x_mps2, window_length
 
     # ---- Bias learning (windowed mean while stationary) ----
     hard_zero_when_stationary = True                 # force accel to 0 during ZUPT after bias removal
-    stationary_abs_threshold_mps2 = 0.6             # |a_filtered| must be below this to consider “quiet”
+    stationary_abs_threshold_mps2 = 0.0001             # |a_filtered| must be below this to consider “quiet”
     stationary_min_consecutive_samples = 5           # need this many quiet samples to declare ZUPT
 
     # Size of the averaging window in *seconds*; convert to samples using nominal dt
@@ -308,6 +308,10 @@ def main():
     cmd_vy = df["cmd_vy"].to_numpy(dtype=np.float64)
     cmd_vz = df["cmd_vz"].to_numpy(dtype=np.float64)
 
+    ma_ax = pd.Series(imu_ax).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
+    ma_ay = pd.Series(imu_ay).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
+    ma_az = pd.Series(imu_az).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
+
     # Print brief summary so you can poke around later if needed
     print(f"[info] N = {len(imu_ax)} samples")
     print(f"[info] t range: {t_plot[0]:.3f} .. {t_plot[-1]:.3f} s")
@@ -319,7 +323,6 @@ def main():
     # --- 2) Velocity from IMU acceleration via simple integration ---
     filtered_acceleration, bias_corrected_acceleration = filter_and_unbias_acceleration(t_imu, imu_ax, acceleration_filtering=True)
 
-
     v_imu_filtered = estimate_velocity_from_acceleration(t_imu, filtered_acceleration, cmd_vx, wheel_radius_m=R_WHEEL)
 
     v_imu_unbiased = estimate_velocity_from_acceleration(t_imu, bias_corrected_acceleration, cmd_vx, wheel_radius_m=R_WHEEL)
@@ -327,11 +330,12 @@ def main():
     # --- Plot ---
     plt.figure()
     plt.plot(t_plot, imu_ax, linewidth=0.2, label="raw acc")
-    plt.plot(t_plot, filtered_acceleration, linewidth=0.2, label="filtered_acc")
-    plt.plot(t_plot, bias_corrected_acceleration, linewidth=0.2, label="bias_corrected_acc", linestyle='--')
+    plt.plot(t_plot, ma_ax, linewidth=0.2, label="raw acc (MA)")
+    # plt.plot(t_plot, filtered_acceleration, linewidth=0.2, label="filtered_acc")
+    # plt.plot(t_plot, bias_corrected_acceleration, linewidth=0.2, label="bias_corrected_acc", linestyle='--')
     plt.xlabel("time (s)")
-    plt.ylabel("acceleration (m/s²)")
-    plt.title("Acceleration: IMU")
+    plt.ylabel("acceleration:x (m/s²)")
+    plt.title("Longitudinal Acceleration: IMU")
     plt.grid(True)
     plt.legend()
     out_base_acc = os.path.join(tools_dir, "accel_imu")
