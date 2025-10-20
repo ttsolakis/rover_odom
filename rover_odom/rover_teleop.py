@@ -55,6 +55,9 @@ class RoverTeleop(Node):
         self.declare_parameter('max_unit', 0.5)           # clamp max command to this         
         self.declare_parameter('max_apply_s', 1.0)        # how long a pressed command is applied: after this send zeros
 
+        self.declare_parameter('wheel_cmd_topic', '/wheel_cmd')   # expects Float32MultiArray [L, R]
+
+
         # --- Read params ---
         self.http_url     = self.get_parameter('http_url').value
         self.rate_hz      = float(self.get_parameter('rate_hz').value)

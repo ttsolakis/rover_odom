@@ -10,7 +10,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Header
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, Vector3Stamped
 from tf2_ros import TransformBroadcaster
 
 def rpy_to_quat(roll, pitch, yaw):
@@ -123,7 +123,7 @@ class ImuJsonToOdom(Node):
       publish_tf (bool): whether to also broadcast odom->base_link TF
       odom_frame (string): name of odom frame
       base_link_frame (string): name of base_link frame
-      topic_name (string): odometry topic name
+      imu_topic (string): odometry topic name
       rate_hz (float): polling rate
       timeout_s (float): HTTP timeout
     """
@@ -152,13 +152,15 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('publish_tf', False)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_link_frame', 'base_link')
-        self.declare_parameter('topic_name', '/imu_odom')
+        self.declare_parameter('imu_topic', '/imu_odom')
+        self.declare_parameter('wheel_cmd_topic', '/wheel_cmd')  # Vector3Stamped: vector.x=Left, vector.y=Right
         self.declare_parameter('rate_hz', 50.0)
         self.declare_parameter('timeout_s', 1.0)
         self.declare_parameter('mount_roll_deg', 0.0)
         self.declare_parameter('mount_pitch_deg', 0.0)
         self.declare_parameter('mount_yaw_deg', 180.0)
         self.declare_parameter('apply_mounting_tf_in_odom', True)
+        
 
         # Read parameters
         self.http_url = self.get_parameter('http_url').value
@@ -181,7 +183,8 @@ class ImuJsonToOdom(Node):
         self.publish_tf = self.get_parameter('publish_tf').value
         self.odom_frame = self.get_parameter('odom_frame').value
         self.base_link = self.get_parameter('base_link_frame').value
-        self.topic_name = self.get_parameter('topic_name').value
+        self.imu_topic = self.get_parameter('imu_topic').value
+        self.wheel_cmd_topic = self.get_parameter('wheel_cmd_topic').value
         self.rate_hz = float(self.get_parameter('rate_hz').value)
         self.timeout_s = float(self.get_parameter('timeout_s').value)
         self.mount_roll_deg = float(self.get_parameter('mount_roll_deg').value)
@@ -213,6 +216,12 @@ class ImuJsonToOdom(Node):
         self._bias_count = 0
         self._bias_done = False
 
+        # Latest wheel command (Vector3Stamped). We use x->left, y->right by default.
+        self.cmd_left = 0.0
+        self.cmd_right = 0.0
+        self.last_cmd_time = None  # float seconds
+
+
         # Pre-compute mounting quaternion: base_link <- imu_link
         mr, mp, my = [math.radians(v) for v in self.mounting_rpy_deg]
         # static TF publishes base->imu; we need imu->base for orientation correction → inverse (conjugate)
@@ -221,10 +230,20 @@ class ImuJsonToOdom(Node):
         self.q_imu_to_base = quat_normalize(self.q_imu_to_base)
 
         # Publisher / TF
-        self.odom_pub = self.create_publisher(Odometry, self.topic_name, 10)
+        self.odom_pub = self.create_publisher(Odometry, self.imu_topic, 10)
         self.tf_broadcaster: Optional[TransformBroadcaster] = (
             TransformBroadcaster(self) if self.publish_tf else None
         )
+
+        # Subscriber to wheel commands (Vector3Stamped)
+        self.wheel_sub = self.create_subscription(
+            Vector3Stamped,
+            self.wheel_cmd_topic,
+            self._wheel_cmd_cb,
+            10
+        )
+        self.get_logger().info(f"Subscribed to wheel commands at '{self.wheel_cmd_topic}' (Vector3Stamped: x=L, y=R)")
+
 
         # Optionally send enable_once_json to device
         if self.enable_once_json:
@@ -261,6 +280,18 @@ class ImuJsonToOdom(Node):
         except Exception as e:
             self.get_logger().warning(f"HTTP fetch/parse error: {e}")
             return None
+        
+    def _wheel_cmd_cb(self, msg: Vector3Stamped):
+        """
+        Cache latest wheel command.
+        Convention here: msg.vector.x = Left, msg.vector.y = Right (units as published, e.g., rad/s).
+        """
+        try:
+            self.cmd_left = float(msg.vector.x)
+            self.cmd_right = float(msg.vector.y)
+            self.last_cmd_time = self.get_clock().now().nanoseconds * 1e-9
+        except Exception as e:
+            self.get_logger().warning(f"wheel_cmd parse error: {e}")
 
     def _timer_cb(self):
         js = self._fetch_json()
@@ -353,58 +384,7 @@ class ImuJsonToOdom(Node):
                  self.get_logger().warning(f"Large residual detected in ax: {ax_raw:.4f} m/s²")
 
             # --- INTEGRATION: get linear velocity from acceleration (simple approx, no drift correction) ---
-            # Learn accel bias on x,y while still (reduces integration drift)
-            if self._calib_done and not self._bias_done and self.auto_level:
-                az_lin = az - self.g  # gravity-compensated vertical
-                gyro_norm = math.sqrt(gx*gx + gy*gy + gz*gz)
-                alin_norm = math.sqrt(ax*ax + ay*ay + az_lin*az_lin)
-                is_still_zupt = (gyro_norm < self.zupt_gyro_thresh) and (alin_norm < self.zupt_accel_thresh)
-                if self._bias_count == 0:
-                    self.get_logger().info(f"Bias computation: hold still for ~{1/(self.rate_hz)*self.bias_samples} sec...")
-
-                if is_still_zupt:
-                    self._bias_ax_sum += ax
-                    self._bias_ay_sum += ay
-                    self._bias_count += 1
-
-                if is_still_zupt and self._bias_count >= self.bias_samples:
-                    self.ax_bias = self._bias_ax_sum / self._bias_count
-                    self.ay_bias = self._bias_ay_sum / self._bias_count
-                    self._bias_done = True
-                    self.get_logger().info(f"Accel bias completed: ax_bias={self.ax_bias:.4f} m/s², ay_bias={self.ay_bias:.4f} m/s² (N={self._bias_count})")
-
-            # dt from node clock (clamped to avoid spikes)
-            now_sec = self.get_clock().now().nanoseconds * 1e-9
-            if self.prev_time_sec is None:
-                dt = 1.0 / max(1.0, self.rate_hz)
-            else:
-                dt = max(0.0, min(0.2, now_sec - self.prev_time_sec))
-            self.prev_time_sec = now_sec
-
-            # Unbias + EMA prefilter (planar)
-            ax_unbias = ax - self.ax_bias
-            ay_unbias = ay - self.ay_bias
-            alpha = max(0.0, min(1.0, self.filter_alpha))
-            # Larger alpha -> more smoothing (more “memory” of the past), smaller alpha -> snappier.
-            self.ax_filtered = alpha * self.ax_filtered + (1.0 - alpha) * ax_unbias
-            self.ay_filtered = alpha * self.ay_filtered + (1.0 - alpha) * ay_unbias
-
-            # Integrate velocity with ZUPT
-            az_lin = az - self.g  # gravity-compensated vertical
-            gyro_norm = math.sqrt(gx*gx + gy*gy + gz*gz)
-            alin_norm = math.sqrt(ax*ax + ay*ay + az_lin*az_lin)
-            is_still = (gyro_norm < self.zupt_gyro_thresh) and (alin_norm < self.zupt_accel_thresh)
-            if is_still:
-                self.vx = 0.0
-                self.vy = 0.0
-            else:
-                self.vx += self.ax_filtered * dt
-                self.vy += self.ay_filtered * dt
-
-            # Anti-drift (leak) toward zero
-            damp = math.exp(-self.velocity_damping_lambda * dt)
-            self.vx *= damp
-            self.vy *= damp
+            # WE WILL ADD CODE HERE LATER
 
         except Exception as e:
             self.get_logger().warning(f"Conversion error: {e}")
