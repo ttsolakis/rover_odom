@@ -23,6 +23,7 @@ import os
 import sys
 import glob
 import numpy as np
+from collections import deque
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -45,13 +46,6 @@ def to_time_vector(sec_col, nsec_col):
     sec = sec_col.to_numpy(dtype=np.float64)
     nsec = nsec_col.to_numpy(dtype=np.float64)
     return sec + nsec * 1e-9
-
-import numpy as np
-
-import numpy as np
-from collections import deque
-
-import numpy as np
 
 def causal_savitzky_golay_coeffs(length, poly_order, dt):
     """
@@ -296,6 +290,8 @@ def main():
     here = os.path.abspath(os.path.dirname(__file__))
     tools_dir = here
 
+    raw_accel_debug_mode = False
+
     # Parse args
     save_npz = False
     csv_path = None
@@ -311,6 +307,12 @@ def main():
     print(f"[info] Reading: {csv_path}")
     df = pd.read_csv(csv_path, sep=",|\t", engine="python")  # allow tab or comma
 
+    # Auto-detect logger mode by column names
+    have_raw_cols = all(col in df.columns for col in ("imu_ax", "imu_ay", "imu_az"))
+    have_est_cols = all(col in df.columns for col in ("imu_vx", "imu_vy", "imu_vz"))
+    if not (have_raw_cols or have_est_cols):
+        raise ValueError("CSV does not contain expected IMU columns (imu_ax/* or imu_vx/*).")
+
     # --- Build time vectors (seconds) ---
     # We'll use the IMU timestamp for dt; plot against t0 = first out-stamp for nicer x axis.
     t_out = to_time_vector(df["t_out_sec"], df["t_out_nanosec"])
@@ -321,75 +323,94 @@ def main():
     t0 = float(t_out[0])
     t_plot = t_out - t0
 
-    # --- Signals as vectors ---
-    imu_ax = df["imu_ax"].to_numpy(dtype=np.float64)
-    imu_ay = df["imu_ay"].to_numpy(dtype=np.float64)
-    imu_az = df["imu_az"].to_numpy(dtype=np.float64)
-    cmd_vx = df["cmd_vx"].to_numpy(dtype=np.float64)
-    cmd_vy = df["cmd_vy"].to_numpy(dtype=np.float64)
-    cmd_vz = df["cmd_vz"].to_numpy(dtype=np.float64)
+    if have_raw_cols:
 
-    # Print brief summary so you can poke around later if needed
-    print(f"[info] N = {len(imu_ax)} samples")
-    print(f"[info] t range: {t_plot[0]:.3f} .. {t_plot[-1]:.3f} s")
-    print(f"[info] imu_ax mean={imu_ax.mean():.6f} std={imu_ax.std():.6f}")
+        print("[info] Using raw acceleration from CSV for velocity estimation.")
+        # --- Signals as vectors ---
+        imu_ax = df["imu_ax"].to_numpy(dtype=np.float64)
+        imu_ay = df["imu_ay"].to_numpy(dtype=np.float64)
+        imu_az = df["imu_az"].to_numpy(dtype=np.float64)
+        cmd_vx = df["cmd_vx"].to_numpy(dtype=np.float64)
+        cmd_vy = df["cmd_vy"].to_numpy(dtype=np.float64)
+        cmd_vz = df["cmd_vz"].to_numpy(dtype=np.float64)
 
-    # --- 1) Velocity from wheel command (assume cmd_vx is angular rate [rad/s]) ---
-    v_cmd = R_WHEEL * cmd_vx  # m/s
+        # Print brief summary so you can poke around later if needed
+        print(f"[info] N = {len(imu_ax)} samples")
+        print(f"[info] t range: {t_plot[0]:.3f} .. {t_plot[-1]:.3f} s")
+        print(f"[info] imu_ax mean={imu_ax.mean():.6f} std={imu_ax.std():.6f}")
 
-    # --- 2) Acceleration post-processing
-    filtered_acceleration, bias_corrected_acceleration = filter_and_unbias_acceleration(t_imu, imu_ax, acceleration_filtering=True)
-    ma_ax = pd.Series(imu_ax).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
-    ma_ax_filtered = pd.Series(filtered_acceleration).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
-    ma_ax_unbiased = pd.Series(bias_corrected_acceleration).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
+        # --- 1) Velocity from wheel command (assume cmd_vx is angular rate [rad/s]) ---
+        v_cmd = R_WHEEL * cmd_vx  # m/s
 
-    # --- 3) Velocity from IMU acceleration via simple integration ---
-    v_imu_filtered = estimate_velocity_from_acceleration(t_imu, filtered_acceleration, cmd_vx, wheel_radius_m=R_WHEEL)
-    v_imu_unbiased = estimate_velocity_from_acceleration(t_imu, bias_corrected_acceleration, cmd_vx, wheel_radius_m=R_WHEEL)
+        # --- 2) Acceleration post-processing
+        filtered_acceleration, bias_corrected_acceleration = filter_and_unbias_acceleration(t_imu, imu_ax, acceleration_filtering=True)
+        ma_ax = pd.Series(imu_ax).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
+        ma_ax_filtered = pd.Series(filtered_acceleration).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
+        ma_ax_unbiased = pd.Series(bias_corrected_acceleration).rolling(int(round(2.0/np.median(np.diff(t_imu)))), center=True, min_periods=1).mean().to_numpy()
 
-    # --- Plot ---
-    plt.figure()
-    plt.plot(t_plot, imu_ax, color="#1f77b4", alpha=0.7, linewidth=0.2, label="raw acceleration")
-    plt.plot(t_plot, ma_ax, color=darken("#1f77b4", factor=0.6), linewidth=0.2)
-    plt.plot(t_plot, filtered_acceleration, color="#ff7f0e", alpha=0.7, linewidth=0.2, label="filtered acceleration")
-    plt.plot(t_plot, ma_ax_filtered, color=darken("#ff7f0e", factor=0.6), linewidth=0.2)
-    plt.plot(t_plot, bias_corrected_acceleration, color="#2ca02c", alpha=0.7, linewidth=0.2, label="unbiased acceleration", linestyle='--')
-    plt.plot(t_plot, ma_ax_unbiased, color=darken("#2ca02c", factor=0.6), linewidth=0.2, linestyle='--')
-    plt.xlabel("time (s)")
-    plt.ylabel("acceleration:x (m/s²)")
-    plt.title("Longitudinal Acceleration: IMU")
-    plt.grid(True)
-    plt.legend()
-    out_base_acc = os.path.join(tools_dir, "accel_imu")
-    plt.savefig(out_base_acc + ".png", dpi=300, bbox_inches="tight")  # high-res raster
-    plt.savefig(out_base_acc + ".pdf",            bbox_inches="tight")  # vector (zoom!)
-    print(f"[info] Saved plots -> {out_base_acc}.png/.pdf")
+        # --- 3) Velocity from IMU acceleration via simple integration ---
+        v_imu_filtered = estimate_velocity_from_acceleration(t_imu, filtered_acceleration, cmd_vx, wheel_radius_m=R_WHEEL)
+        v_imu_unbiased = estimate_velocity_from_acceleration(t_imu, bias_corrected_acceleration, cmd_vx, wheel_radius_m=R_WHEEL)
 
-    plt.figure()
-    plt.plot(t_plot, v_cmd, label="v_cmd = R * cmd_vx (m/s)")
-    plt.plot(t_plot, v_imu_filtered, label="v_imu = ∫ a_x dt (m/s) - a_x filtered", linewidth=0.2)
-    plt.plot(t_plot, v_imu_unbiased, label="v_imu = ∫ a_x dt (m/s) - a_x unbiased", linewidth=0.2, linestyle='--')
-    plt.xlabel("time (s)")
-    plt.ylabel("velocity (m/s)")
-    plt.title("Velocity: wheel cmd vs IMU integration")
-    plt.grid(True)
-    plt.legend()
-    out_base_vel = os.path.join(tools_dir, "vel_compare")
-    plt.savefig(out_base_vel + ".png", dpi=300, bbox_inches="tight")  # high-res raster
-    plt.savefig(out_base_vel + ".pdf",            bbox_inches="tight")  # vector (zoom!)
-    print(f"[info] Saved plots -> {out_base_vel}.png/.pdf")
+        # --- Plot ---
+        plt.figure()
+        plt.plot(t_plot, imu_ax, color="#1f77b4", alpha=0.7, linewidth=0.2, label="raw acceleration")
+        plt.plot(t_plot, ma_ax, color=darken("#1f77b4", factor=0.6), linewidth=0.2)
+        plt.plot(t_plot, filtered_acceleration, color="#ff7f0e", alpha=0.7, linewidth=0.2, label="filtered acceleration")
+        plt.plot(t_plot, ma_ax_filtered, color=darken("#ff7f0e", factor=0.6), linewidth=0.2)
+        plt.plot(t_plot, bias_corrected_acceleration, color="#2ca02c", alpha=0.7, linewidth=0.2, label="unbiased acceleration", linestyle='--')
+        plt.plot(t_plot, ma_ax_unbiased, color=darken("#2ca02c", factor=0.6), linewidth=0.2, linestyle='--')
+        plt.xlabel("time (s)")
+        plt.ylabel("acceleration:x (m/s²)")
+        plt.title("Longitudinal Acceleration: IMU")
+        plt.grid(True)
+        plt.legend()
+        out_base_acc = os.path.join(tools_dir, "accel_imu")
+        plt.savefig(out_base_acc + ".png", dpi=300, bbox_inches="tight")  # high-res raster
+        plt.savefig(out_base_acc + ".pdf",            bbox_inches="tight")  # vector (zoom!)
+        print(f"[info] Saved plots -> {out_base_acc}.png/.pdf")
 
-    # --- Optionally save vectors for quick reuse ---
-    if save_npz:
-        out_npz = os.path.join(tools_dir, "vel_compare_data.npz")
-        np.savez_compressed(
-            out_npz,
-            t_out=t_out, t_imu=t_imu, t_cmd=t_cmd, t_plot=t_plot,
-            imu_ax=imu_ax, imu_ay=imu_ay, imu_az=imu_az,
-            cmd_vx=cmd_vx, cmd_vy=cmd_vy, cmd_vz=cmd_vz,
-            v_cmd=v_cmd, v_imu=v_imu, dt=dt
-        )
-        print(f"[info] Saved vectors -> {out_npz}")
+        plt.figure()
+        plt.plot(t_plot, v_cmd, label="v_cmd = R * cmd_vx (m/s)")
+        plt.plot(t_plot, v_imu_filtered, label="v_imu = ∫ a_x dt (m/s) - a_x filtered", linewidth=0.2)
+        plt.plot(t_plot, v_imu_unbiased, label="v_imu = ∫ a_x dt (m/s) - a_x unbiased", linewidth=0.2, linestyle='--')
+        plt.xlabel("time (s)")
+        plt.ylabel("velocity (m/s)")
+        plt.title("Velocity: wheel cmd vs IMU integration")
+        plt.grid(True)
+        plt.legend()
+        out_base_vel = os.path.join(tools_dir, "vel_compare")
+        plt.savefig(out_base_vel + ".png", dpi=300, bbox_inches="tight")  # high-res raster
+        plt.savefig(out_base_vel + ".pdf",            bbox_inches="tight")  # vector (zoom!)
+        print(f"[info] Saved plots -> {out_base_vel}.png/.pdf")
+
+    else:
+
+        print("[info] Using integrated velocities from CSV.")
+        # --- Signals as vectors ---
+        imu_vx = df["imu_vx"].to_numpy(dtype=np.float64)
+        imu_vy = df["imu_vy"].to_numpy(dtype=np.float64)
+        imu_vz = df["imu_vz"].to_numpy(dtype=np.float64)
+        cmd_vx = df["cmd_vx"].to_numpy(dtype=np.float64)
+        cmd_vy = df["cmd_vy"].to_numpy(dtype=np.float64)
+        cmd_vz = df["cmd_vz"].to_numpy(dtype=np.float64)
+
+        v_cmd = R_WHEEL * cmd_vx  # m/s
+
+        # --- Plot ---
+        plt.figure()
+        plt.plot(t_plot, v_cmd, color="#1f77b4", alpha=0.7, linewidth=0.6, label="v_cmd (m/s)")
+        plt.plot(t_plot, imu_vx, color="#ff7f0e", linewidth=0.2, label="imu_vx (m/s)")
+        plt.xlabel("time (s)")
+        plt.ylabel("velocity:x (m/s)")
+        plt.title("Longitudinal Velocity: IMU")
+        plt.grid(True)
+        plt.legend()
+        out_base_vel = os.path.join(tools_dir, "velocity_estimate_from_imu")
+        plt.savefig(out_base_vel + ".png", dpi=300, bbox_inches="tight")  # high-res raster
+        plt.savefig(out_base_vel + ".pdf",            bbox_inches="tight")  # vector (zoom!)
+        print(f"[info] Saved plots -> {out_base_vel}.png/.pdf")
+
 
 if __name__ == "__main__":
     main()

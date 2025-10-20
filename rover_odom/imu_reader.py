@@ -3,8 +3,10 @@ import math
 import json
 import re
 import urllib.request
+import numpy as np
 from urllib.parse import urlencode
 from typing import Optional
+from collections import deque
 
 import rclpy
 from rclpy.node import Node
@@ -109,6 +111,139 @@ def quat_from_two_vectors(a, b):
     qw = 1.0 + d
     return quat_normalize((qx, qy, qz, qw))
 
+def causal_savitzky_golay_coeffs(length, poly_order, dt):
+
+    # Indices of the past samples: k = 0..L-1  (0=now, 1=1 step back, ...)
+    k = np.arange(length, dtype=float)
+
+    # Times of those samples relative to "now": t_k = -k * dt (non-positive)
+    t = -k * dt
+
+    # Vandermonde-like design matrix A (L x (p+1)):
+    #   row k is [1, t_k, t_k^2, ..., t_k^p]
+    # We stack columns t^0, t^1, ..., t^p and then transpose to get L rows.
+    A = np.vstack([t**p for p in range(poly_order + 1)]).T
+
+    # Vector that selects the constant term a0 (value at t=0) from the polynomial coefficients
+    e0 = np.zeros(poly_order + 1)
+    e0[0] = 1.0
+
+    # Compute (A^T A)^{-1} using pseudoinverse for numerical robustness
+    ATA_inv = np.linalg.pinv(A.T @ A)
+
+    # Endpoint SG weights:
+    #   h = A (A^T A)^{-1} e0
+    # This yields a length-L vector of FIR weights for y_hat[i] = sum h[k] * y[i-k]
+    h = A @ (ATA_inv @ e0)
+
+    return h
+
+def filter_and_unbias_acceleration(time_imu_seconds, accel_x_mps2, window_length=15, poly_order=2, acceleration_filtering=True):
+    
+        # --- pass-through until we have enough samples for SG + bias learning ---
+        time_imu_seconds = np.asarray(time_imu_seconds, dtype=float)
+        accel_x_mps2     = np.asarray(accel_x_mps2, dtype=float)
+        N = accel_x_mps2.size
+        if N == 0:
+            return 0.0
+        if N < window_length:
+            return float(accel_x_mps2[-1])
+        
+        # --- Savitzky-Golay filter setup ---
+        # Idea: Smooth the raw acceleration to reduce noise before integration with a causal SG filter.
+        # This is a low-pass FIR filter that preserves low-degree polynomials up to `poly_order`.
+        # It has no phase distortion (zero phase on polynomials up to `poly_order`), so it doesn't
+        # bias ramps/curvature, just smooths high-frequency noise.
+        dt_nominal = float(np.median(np.diff(time_imu_seconds)))
+        assert window_length >= poly_order + 1, "window_length must be >= poly_order + 1"
+        savitzky_golay_weights = causal_savitzky_golay_coeffs(window_length, poly_order, dt_nominal)
+
+        # ---- Bias learning (windowed mean while stationary) ----
+        hard_zero_when_stationary = True
+        stationary_abs_threshold_mps2 = 0.1
+        stationary_min_consecutive_samples = 10
+        bias_window_samples = stationary_min_consecutive_samples
+        zupt_window_values = deque(maxlen=bias_window_samples)
+
+        # Main loop
+        bias_estimate = 0.0
+        consecutive_stationary_count = 0
+        bias_corrected_acceleration = float(accel_x_mps2[-1])  # fallback
+
+        start_i = 0 if not acceleration_filtering else (window_length - 1)
+        for i in range(start_i, N):
+
+            # --- 1) Filter raw acceleratation data ---
+            if acceleration_filtering:
+                acceleration_buffer = accel_x_mps2[i - window_length + 1 : i + 1][::-1]  # newest→oldest
+                filtered_value = float(np.dot(savitzky_golay_weights, acceleration_buffer))
+            else:
+                filtered_value = float(accel_x_mps2[i])
+
+            # --- 2) Remove acceleration bias (windowed mean while stationary) ---
+            # Logic:
+            #  • If |filtered_value| is small, increment a “quiet” counter and push it into a small deque.
+            #  • If not quiet, reset the counter and clear the deque (don’t learn from motion).
+            #  • Once we’re confidently stationary (counter ≥ threshold) and the window is full,
+            #    set bias_estimate = mean(window). Otherwise keep the last bias_estimate.
+            #  • Subtract bias everywhere; optionally hard-zero while stationary.
+            if abs(filtered_value) < stationary_abs_threshold_mps2:
+                consecutive_stationary_count += 1
+                zupt_window_values.append(filtered_value)
+            else:
+                consecutive_stationary_count = 0
+                zupt_window_values.clear()
+
+            is_stationary = (consecutive_stationary_count >= stationary_min_consecutive_samples)
+
+            if is_stationary and len(zupt_window_values) == bias_window_samples:
+                bias_estimate = float(np.mean(zupt_window_values))
+
+            if is_stationary and hard_zero_when_stationary:
+                bias_corrected_acceleration = 0.0
+            else:
+                bias_corrected_acceleration = filtered_value - bias_estimate
+
+        # Return the latest sample's bias-corrected acceleration as a scalar
+        return float(bias_corrected_acceleration)
+
+
+def estimate_velocity_from_acceleration(time_imu_seconds, filtered_acceleration, cmd_wheel_rate_rad_s, previous_velocity_estimate_mps, wheel_radius_m, constant_velocity_threshold, zupt_speed_threshold_mps):
+
+    # Need at least two samples everywhere we take last-two
+    if len(time_imu_seconds) < 2 or len(filtered_acceleration) < 2 or len(cmd_wheel_rate_rad_s) < 2:
+        return float(previous_velocity_estimate_mps)
+    
+    previous_time_imu_seconds, current_time_imu_seconds = float(time_imu_seconds[-2]), float(time_imu_seconds[-1])
+    previous_filtered_acceleration, current_filtered_acceleration = float(filtered_acceleration[-2]), float(filtered_acceleration[-1])
+    previous_cmd_wheel_rate_rad_s, current_cmd_wheel_rate_rad_s = float(cmd_wheel_rate_rad_s[-2]), float(cmd_wheel_rate_rad_s[-1])
+    current_velocity_cmd_linear_mps = wheel_radius_m * current_cmd_wheel_rate_rad_s
+    previous_velocity_cmd_linear_mps = wheel_radius_m * previous_cmd_wheel_rate_rad_s
+    
+    # --- 1) ZUPT gating ---
+    near_zero_cmd = (abs(current_velocity_cmd_linear_mps) < zupt_speed_threshold_mps)
+    sign_flip_cmd = (current_velocity_cmd_linear_mps * previous_velocity_cmd_linear_mps) < 0.0
+    if near_zero_cmd or sign_flip_cmd:
+        return 0.0
+
+    # --- 2) CUPT gating ---
+    # Only run this when the buffer is exactly the chosen window size.
+    if len(cmd_wheel_rate_rad_s) == int(constant_velocity_threshold):
+        v_cmd_window = wheel_radius_m * np.asarray(cmd_wheel_rate_rad_s, dtype=float)
+        diffs = np.diff(v_cmd_window)
+        if np.all(np.abs(diffs) <= 0.01):
+            return float(current_velocity_cmd_linear_mps)
+
+    # --- 3) Trapezoidal Integration ---
+    dt = current_time_imu_seconds - previous_time_imu_seconds
+    if not np.isfinite(dt) or dt <= 0.0:
+        return float(previous_velocity_estimate_mps)
+    
+    current_velocity_estimate_mps =  previous_velocity_estimate_mps + 0.5*(current_filtered_acceleration + previous_filtered_acceleration) * dt
+
+    return current_velocity_estimate_mps
+
+
 class ImuJsonToOdom(Node):
     """
     Node that polls an HTTP JSON endpoint and publishes nav_msgs/Odometry.
@@ -144,11 +279,6 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('level_samples', 100)
         self.declare_parameter('level_gyro_thresh', 0.1)  
         self.declare_parameter('level_accel_thresh', 0.2)
-        self.declare_parameter('bias_samples', 100)
-        self.declare_parameter('zupt_gyro_thresh', 0.1)
-        self.declare_parameter('zupt_accel_thresh', 0.2)
-        self.declare_parameter('filter_alpha', 0.1) 
-        self.declare_parameter('velocity_damping_lambda', 0.05) 
         self.declare_parameter('publish_tf', False)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_link_frame', 'base_link')
@@ -160,7 +290,12 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('mount_pitch_deg', 0.0)
         self.declare_parameter('mount_yaw_deg', 180.0)
         self.declare_parameter('apply_mounting_tf_in_odom', True)
-        
+        self.declare_parameter('accel_filtering', True)          # enable SG smoothing
+        self.declare_parameter('sg_window_length', 10)           # causal window length
+        self.declare_parameter('sg_poly_order', 2)               # polynomial order
+        self.declare_parameter('wheel_radius_m', 0.04)
+        self.declare_parameter('zupt_speed_threshold_mps', 0.02)
+        self.declare_parameter('constant_velocity_threshold', 10)
 
         # Read parameters
         self.http_url = self.get_parameter('http_url').value
@@ -175,11 +310,6 @@ class ImuJsonToOdom(Node):
         self.level_samples = int(self.get_parameter('level_samples').value)
         self.level_gyro_thresh = float(self.get_parameter('level_gyro_thresh').value)
         self.level_accel_thresh = float(self.get_parameter('level_accel_thresh').value)
-        self.bias_samples = int(self.get_parameter('bias_samples').value)
-        self.zupt_gyro_thresh = float(self.get_parameter('zupt_gyro_thresh').value)
-        self.zupt_accel_thresh = float(self.get_parameter('zupt_accel_thresh').value)
-        self.filter_alpha = float(self.get_parameter('filter_alpha').value)
-        self.velocity_damping_lambda = float(self.get_parameter('velocity_damping_lambda').value)
         self.publish_tf = self.get_parameter('publish_tf').value
         self.odom_frame = self.get_parameter('odom_frame').value
         self.base_link = self.get_parameter('base_link_frame').value
@@ -192,8 +322,12 @@ class ImuJsonToOdom(Node):
         self.mount_yaw_deg = float(self.get_parameter('mount_yaw_deg').value)
         self.mounting_rpy_deg = [self.mount_roll_deg, self.mount_pitch_deg, self.mount_yaw_deg] 
         self.apply_mounting_tf = bool(self.get_parameter('apply_mounting_tf_in_odom').value)
-
-        self.get_logger().info(f"raw_accel_debug_mode: {self.raw_accel_debug_mode}. Publishing accelerations for debugging...")
+        self.accel_filtering = bool(self.get_parameter('accel_filtering').value)
+        self.sg_window_length = int(self.get_parameter('sg_window_length').value)
+        self.sg_poly_order = int(self.get_parameter('sg_poly_order').value)
+        self.wheel_radius_m = float(self.get_parameter('wheel_radius_m').value)
+        self.zupt_speed_threshold_mps = float(self.get_parameter('zupt_speed_threshold_mps').value)
+        self.constant_velocity_threshold = int(self.get_parameter('constant_velocity_threshold').value)
 
         # calibration buffers/state
         self.g = 9.80665
@@ -203,24 +337,20 @@ class ImuJsonToOdom(Node):
         self.q_align = (0.0, 0.0, 0.0, 1.0)  # imu_link -> "ideal imu" (Z up) tilt correction
         self.accel_residual_thresh = 0.05  # m/s² threshold for large residual warning
 
-        # Integration state (planar)
-        self.prev_time_sec = None
-        self.vx = 0.0
-        self.vy = 0.0
-        self.ax_bias = 0.0
-        self.ay_bias = 0.0
-        self.ax_filtered = 0.0
-        self.ay_filtered = 0.0
-        self._bias_ax_sum = 0.0
-        self._bias_ay_sum = 0.0
-        self._bias_count = 0
-        self._bias_done = False
-
         # Latest wheel command (Vector3Stamped). We use x->left, y->right by default.
         self.cmd_left = 0.0
         self.cmd_right = 0.0
         self.last_cmd_time = None  # float seconds
 
+        # Rolling buffers used to call the offline function on a sliding window
+        self._time_buf = deque(maxlen=self.sg_window_length)
+        self._accel_buf = deque(maxlen=self.sg_window_length)
+        self._cmd_vel_buf = deque(maxlen=self.constant_velocity_threshold)
+        self._ax_filtered_buf = deque(maxlen=2)
+
+        # Integrated velocity state
+        self.vx_estimated = 0.0
+        self.prev_vx_estimated = 0.0
 
         # Pre-compute mounting quaternion: base_link <- imu_link
         mr, mp, my = [math.radians(v) for v in self.mounting_rpy_deg]
@@ -384,7 +514,19 @@ class ImuJsonToOdom(Node):
                  self.get_logger().warning(f"Large residual detected in ax: {ax_raw:.4f} m/s²")
 
             # --- INTEGRATION: get linear velocity from acceleration (simple approx, no drift correction) ---
-            # WE WILL ADD CODE HERE LATER
+            # --- Collect into rolling buffers ---
+            t_sec_now = self.get_clock().now().nanoseconds * 1e-9  # timestamp aligned with this IMU sample
+            self._time_buf.append(t_sec_now)
+            self._accel_buf.append(ax)  # longitudinal accel in base_link
+            self._cmd_vel_buf.append( 0.5 * (self.cmd_left + self.cmd_right) )  # average wheel command
+
+            # --- Filter and unbias acceleration
+            ax_filtered = filter_and_unbias_acceleration(self._time_buf, self._accel_buf, window_length=self.sg_window_length, poly_order=self.sg_poly_order, acceleration_filtering=self.accel_filtering)
+            self._ax_filtered_buf.append(ax_filtered)
+
+            # --- Velocity from IMU acceleration via simple integration ---
+            self.vx_estimated = estimate_velocity_from_acceleration(self._time_buf, self._ax_filtered_buf, self._cmd_vel_buf, self.prev_vx_estimated, wheel_radius_m=self.wheel_radius_m, constant_velocity_threshold=self.constant_velocity_threshold, zupt_speed_threshold_mps=self.zupt_speed_threshold_mps)
+            self.prev_vx_estimated = self.vx_estimated
 
         except Exception as e:
             self.get_logger().warning(f"Conversion error: {e}")
@@ -409,8 +551,8 @@ class ImuJsonToOdom(Node):
             odom.twist.twist.linear.y = ay_raw
             odom.twist.twist.linear.z = az_raw
         else:   
-            odom.twist.twist.linear.x = self.vx
-            odom.twist.twist.linear.y = self.vy
+            odom.twist.twist.linear.x = self.vx_estimated
+            odom.twist.twist.linear.y = 0.0
             odom.twist.twist.linear.z = 0.0
 
         odom.twist.twist.angular.x = gx

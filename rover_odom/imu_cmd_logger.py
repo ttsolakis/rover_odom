@@ -33,6 +33,7 @@ class ImuCmdAligner(Node):
         self.declare_parameter('write_csv', True)
         self.declare_parameter('csv_dir', default_csv_dir)
         self.declare_parameter('csv_basename', 'imu_cmd_aligned')
+        self.declare_parameter('raw_accel_debug_mode', False) 
 
         imu_topic   = self.get_parameter('imu_topic').get_parameter_value().string_value
         cmd_topic   = self.get_parameter('cmd_topic').get_parameter_value().string_value
@@ -42,6 +43,7 @@ class ImuCmdAligner(Node):
         self.write_csv = self.get_parameter('write_csv').get_parameter_value().bool_value
         csv_dir     = self.get_parameter('csv_dir').get_parameter_value().string_value
         csv_basename= self.get_parameter('csv_basename').get_parameter_value().string_value
+        self.raw_accel_debug_mode = self.get_parameter('raw_accel_debug_mode').get_parameter_value().bool_value
 
         # Publisher
         self.pub = self.create_publisher(AccelStamped, output_topic, 10)
@@ -65,7 +67,8 @@ class ImuCmdAligner(Node):
 
         self.get_logger().info(
             f"ImuCmdAligner started. imu_topic={imu_topic}, cmd_topic={cmd_topic}, "
-            f"output_topic={output_topic}, slop={sync_slop:.3f}s"
+            f"output_topic={output_topic}, slop={sync_slop:.3f}s, "
+            f"raw_accel_debug_mode={self.raw_accel_debug_mode}"
         )
 
     def synced_cb(self, imu_msg: Odometry, cmd_msg: Vector3Stamped):
@@ -91,9 +94,16 @@ class ImuCmdAligner(Node):
         if self.csv_writer is None:
             self.csv_file = open(self.csv_path, 'w', newline='')
             self.csv_writer = csv.writer(self.csv_file)
+
+            # Choose headers that match what odom is publishing into twist.linear
+            if self.raw_accel_debug_mode:
+                lin_labels = ['imu_ax', 'imu_ay', 'imu_az']
+            else:
+                lin_labels = ['imu_vx', 'imu_vy', 'imu_vz']
+
             self.csv_writer.writerow([
                 't_out_sec','t_out_nanosec','t_imu_sec','t_imu_nanosec','t_cmd_sec','t_cmd_nanosec',
-                'imu_ax','imu_ay','imu_az','cmd_vx','cmd_vy','cmd_vz',
+                *lin_labels, 'cmd_vx','cmd_vy','cmd_vz',
             ])
 
         self.csv_writer.writerow([

@@ -50,7 +50,7 @@ def generate_launch_description():
             'gyro_is_deg': 'true',
             'accel_is_mg': 'true',
             'auto_level': 'true',
-            'raw_accel_debug_mode': 'true',
+            'raw_accel_debug_mode': 'false',
 
             'level_samples': '100',
             'level_gyro_thresh': '0.1',
