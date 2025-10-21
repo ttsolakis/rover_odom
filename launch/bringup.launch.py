@@ -8,10 +8,12 @@ from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import PathJoinSubstitution, Command, FindExecutable, LaunchConfiguration
 from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
+from datetime import datetime
 import os
 
 def generate_launch_description():
-    # Toggle starting teleop (needs a real terminal/TTY)
+
+    # ========== Launch arguments ==========
     start_teleop_arg = DeclareLaunchArgument(
         'start_teleop', default_value='true',
         description='Start rover_teleop in a separate terminal (WASD).'
@@ -21,6 +23,13 @@ def generate_launch_description():
         'start_logger', default_value='true',
         description='Open a separate terminal for logger_cmd_vel_yaw.'
     )
+
+    record_ekf_bag_arg = DeclareLaunchArgument(
+        'record_ekf_bag', default_value='false',
+        description='If true, record /ekf_odom to ~/bags/ekf_drive_<timestamp>/.'
+    )
+
+    # ========== Launch components ==========
 
     # 1) LiDAR driver
     sllidar_pkg = get_package_share_directory('sllidar_ros2')
@@ -157,6 +166,7 @@ def generate_launch_description():
             'base_link_frame': 'base_link',
             'log_every_n': 20,
             'cmd_buffer_size': 500,
+            'unit_to_radps': 1.0,
         }],
     )
 
@@ -195,10 +205,22 @@ def generate_launch_description():
             }]
     )
 
+    # 11) Optional: ros2 bag record /ekf_odom → ~/bags/ekf_drive_<timestamp>/
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    bags_dir = os.path.expanduser('~/bags')
+    os.makedirs(bags_dir, exist_ok=True)
+    bag_out = os.path.join(bags_dir, f'ekf_drive_{timestamp}')
+    bag_record = ExecuteProcess(
+        cmd=['ros2', 'bag', 'record', '-o', bag_out, '/ekf_odom'],
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('record_ekf_bag')),
+    )
+
 
     return LaunchDescription([
         start_teleop_arg,
         start_logger_arg,
+        record_ekf_bag_arg, 
         lidar_launch,
         imu_odom_launch,
         slam,
@@ -209,4 +231,5 @@ def generate_launch_description():
         ekf,
         logger_term,
         logger_imu_cmd_vel,
+        bag_record,
     ])

@@ -34,14 +34,16 @@ def wrap_pi(a: float) -> float:
 class EkfOdomNode(Node):
     """
     STEP 1: Subscribe to IMU odometry (/imu_odom) and wheel commands
-    (/wheel_cmd_units_stamped). No filtering yet, just validate data flow.
+    (/wheel_cmd). No filtering yet, just validate data flow.
     Subscriptions:
       • IMU odometry '/imu_odom' → measurement y_k = [phi, u, r]
-      • Wheel commands '/wheel_cmd_units_stamped' → control τ_k (units→rad/s via gain)
+      • Wheel commands '/wheel_cmd' → control τ_k (units→rad/s via gain)
 
     STEP 2: Keep I/O callbacks as data sources only; run EKF in a separate timer callback.
 
-    STEP 3: Publish /ekf_odom (nav_msgs/Odometry).
+    STEP 3: Fuse data with EKF.
+
+    STEP 4: Publish /ekf_odom (nav_msgs/Odometry).
     """
 
     def __init__(self):
@@ -49,7 +51,7 @@ class EkfOdomNode(Node):
 
         # --- I/O Parameters (unchanged) ---
         self.declare_parameter('imu_odom_topic', '/imu_odom')
-        self.declare_parameter('wheel_cmd_topic', '/wheel_cmd_units_stamped')
+        self.declare_parameter('wheel_cmd_topic', '/wheel_cmd')
         self.declare_parameter('log_every_n', 20)
         self.declare_parameter('cmd_buffer_size', 500)
 
