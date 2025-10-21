@@ -11,7 +11,7 @@ from nav_msgs.msg import Odometry
 
 class CmdYawLogger(Node):
     def __init__(self):
-        super().__init__('cmd_yaw_logger')
+        super().__init__('logger_cmd_vel_yaw')
 
         # Params
         self.declare_parameter('imu_topic', '/imu_odom')

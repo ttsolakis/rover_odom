@@ -35,8 +35,8 @@ setup(
             'imu_reader      = rover_odom.imu_reader:main',
             'rover_teleop    = rover_odom.rover_teleop:main',
             'ekf_odom        = rover_odom.ekf_odom:main',
-            'cmd_yaw_logger  = rover_odom.cmd_yaw_logger:main',
-            'imu_cmd_logger  = rover_odom.imu_cmd_logger:main',
+            'logger_cmd_vel_yaw  = rover_odom.logger_cmd_vel_yaw:main',
+            'logger_imu_cmd_vel  = rover_odom.logger_imu_cmd_vel:main',
         ],
     },
 )

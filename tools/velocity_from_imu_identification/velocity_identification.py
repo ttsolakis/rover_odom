@@ -399,8 +399,8 @@ def main():
 
         # --- Plot ---
         plt.figure()
-        plt.plot(t_plot, v_cmd, color="#1f77b4", alpha=0.7, linewidth=0.6, label="v_cmd (m/s)")
-        plt.plot(t_plot, imu_vx, color="#ff7f0e", linewidth=0.2, label="imu_vx (m/s)")
+        plt.plot(t_plot, v_cmd, color="#1f77b4", alpha=0.7, linewidth=0.8, label="v_cmd (m/s)")
+        plt.plot(t_plot, imu_vx, color="#ff7f0e", linewidth=0.8, label="imu_vx (m/s)")
         plt.xlabel("time (s)")
         plt.ylabel("velocity:x (m/s)")
         plt.title("Longitudinal Velocity: IMU")

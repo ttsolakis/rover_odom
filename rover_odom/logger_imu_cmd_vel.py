@@ -13,7 +13,7 @@ from message_filters import Subscriber, ApproximateTimeSynchronizer
 
 class ImuCmdAligner(Node):
     def __init__(self):
-        super().__init__('imu_cmd_aligner')
+        super().__init__('logger_imu_cmd_vel')
 
         # Resolve a good default CSV directory inside the installed package share (…/share/rover_odom/tools/velocity_from_imu_identification)
         try:
