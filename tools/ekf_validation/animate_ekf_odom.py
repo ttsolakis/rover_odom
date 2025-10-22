@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Animate /ekf_odom from a ROS 2 bag (MCAP/SQLite) and save an MP4 next to this script.
+Animate the LATEST exported CSV (t,x,y,yaw) from ~/bags and save an MP4 next to this script.
+
+It expects CSVs created by bag_to_csv_ekf_odom.py, named like:
+  ~/bags/ekf_drive_YYYYMMDD_HHMMSS.csv
+with columns: t,x,y,yaw
 
 Draws:
   • dashed "progress path" from the start (0) to the robot's current center
@@ -8,13 +12,21 @@ Draws:
   • center dot at (x,y)
   • a square (4 lines) centered at (x,y), rotated by yaw, side = --box_side
 
-Usage:
-  python3 animate_ekf_odom_dashed.py --bag ~/bags/ekf_drive_20251021_134240 --box_side 0.22
+Usage (no args; auto-picks latest CSV):
+  python3 ~/slam_ws/src/rover_odom/tools/ekf_validation/animate_ekf_odom.py
+
+Optional:
+  --csv /path/to/file.csv
+  --bags_dir ~/bags
+  --box_side 0.22
+  --trail 200
+  --speed 1.0
+  --dpi 120
 
 Requires:
-  sudo apt install ros-jazzy-rosbag2* ffmpeg
+  sudo apt install ffmpeg
 """
-import os, math, argparse, yaml, shutil
+import os, sys, glob, math, argparse, shutil
 import numpy as np
 from datetime import datetime
 
@@ -25,96 +37,89 @@ import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.animation import FFMpegWriter
 
-from nav_msgs.msg import Odometry
-from rclpy.serialization import deserialize_message
-
-try:
-    import rosbag2_py
-except Exception:
-    raise SystemExit("rosbag2_py not found. Install: sudo apt install ros-jazzy-rosbag2*")
+DEF_BAGS_DIR = os.path.expanduser('~/bags')
+DEF_PREFIX   = 'ekf_drive_'
 
 # ---------------------------- helpers ---------------------------- #
 
-def yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
-    s = 2.0 * (qw * qz + qx * qy)
-    c = 1.0 - 2.0 * (qy * qy + qz * qz)
-    return math.atan2(s, c)
+def find_latest_csv(bags_dir: str, prefix: str) -> str:
+    """
+    Find the newest CSV by lexicographic order matching <bags_dir>/<prefix>*.csv
+    (Works with names like ekf_drive_YYYYMMDD_HHMMSS.csv)
+    """
+    pattern = os.path.join(bags_dir, f"{prefix}*.csv")
+    candidates = [p for p in glob.glob(pattern) if os.path.isfile(p)]
+    if not candidates:
+        raise FileNotFoundError(f"No CSVs matching {pattern}")
+    # Sort by basename descending (timestamp is lexicographically sortable)
+    return sorted(candidates, key=lambda p: os.path.basename(p), reverse=True)[0]
 
-def read_series(bag_dir: str, topic: str):
-    meta = os.path.join(bag_dir, "metadata.yaml")
-    if not os.path.exists(meta):
-        raise FileNotFoundError(f"metadata.yaml not found in: {bag_dir}")
+def load_csv(csv_path: str):
+    """
+    Load CSV with columns t,x,y,yaw. Supports header or no header.
+    Returns arrays T, X, Y, YAW (float).
+    """
+    csv_path = os.path.expanduser(csv_path)
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(csv_path)
 
-    with open(meta, "r") as f:
-        storage_id = yaml.safe_load(f).get("storage_identifier", "mcap")
+    # Try names=True first (handles header "t,x,y,yaw")
+    try:
+        data = np.genfromtxt(csv_path, delimiter=",", names=True, dtype=float)
+        if {'t','x','y','yaw'}.issubset(set(data.dtype.names or [])):
+            T   = np.asarray(data['t'],   dtype=float)
+            X   = np.asarray(data['x'],   dtype=float)
+            Y   = np.asarray(data['y'],   dtype=float)
+            YAW = np.asarray(data['yaw'], dtype=float)
+            return T, X, Y, YAW
+        # Fall through to no-header parse
+    except Exception:
+        pass
 
-    reader = rosbag2_py.SequentialReader()
-    reader.open(
-        rosbag2_py.StorageOptions(uri=bag_dir, storage_id=storage_id),
-        rosbag2_py.ConverterOptions(input_serialization_format="cdr",
-                                    output_serialization_format="cdr"),
-    )
-
-    topics = {t.name: t.type for t in reader.get_all_topics_and_types()}
-    if topic not in topics:
-        raise SystemExit(
-            f"Topic '{topic}' not found in bag.\nAvailable topics:\n" +
-            "\n".join(sorted(topics))
-        )
-
-    T, X, Y, YAW = [], [], [], []
-    t0 = None
-
-    while reader.has_next():
-        name, data, t_ns = reader.read_next()
-        if name != topic:
-            continue
-
-        msg: Odometry = deserialize_message(data, Odometry)
-        x = float(msg.pose.pose.position.x)
-        y = float(msg.pose.pose.position.y)
-        q = msg.pose.pose.orientation
-        yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
-
-        t = t_ns * 1e-9
-        if t0 is None:
-            t0 = t
-
-        T.append(t - t0)
-        X.append(x)
-        Y.append(y)
-        YAW.append(yaw)
-
-    if not T:
-        raise SystemExit(f"No messages on topic '{topic}' in the bag.")
-
-    return np.array(T), np.array(X), np.array(Y), np.array(YAW)
+    # Fallback: no header (four columns)
+    arr = np.loadtxt(csv_path, delimiter=",", dtype=float)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    if arr.shape[1] < 4:
+        raise ValueError(f"CSV must have at least 4 columns (t,x,y,yaw). Got shape {arr.shape}")
+    T, X, Y, YAW = arr[:,0], arr[:,1], arr[:,2], arr[:,3]
+    return T, X, Y, YAW
 
 # ---------------------------- main ---------------------------- #
 
 def main():
     if shutil.which("ffmpeg") is None:
-        raise SystemExit("ffmpeg not found in PATH. Install it: sudo apt install ffmpeg")
+        sys.exit("ffmpeg not found in PATH. Install it: sudo apt install ffmpeg")
 
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--bag", required=True, help="Path to bag directory (contains metadata.yaml)")
-    ap.add_argument("--topic", default="/ekf_odom", help="Odometry topic to read")
-    ap.add_argument("--box_side", type=float, default=0.22, help="Side length of the robot square [m]")
+    ap = argparse.ArgumentParser(description="Animate latest ekf_drive_*.csv from ~/bags and save MP4.")
+    ap.add_argument("--csv", default=None, help="Explicit CSV path (default: latest ~/bags/ekf_drive_*.csv)")
+    ap.add_argument("--bags_dir", default=DEF_BAGS_DIR, help="Directory to search for ekf_drive_*.csv (default: ~/bags)")
+    ap.add_argument("--prefix", default=DEF_PREFIX, help="CSV prefix (default: ekf_drive_)")
+    ap.add_argument("--box_side", type=float, default=0.22, help="Square side length [m]")
     ap.add_argument("--trail", type=int, default=0, help="If >0, draw a short solid trail of this many points near the robot")
-    ap.add_argument("--speed", type=float, default=1.0, help="Playback speed scaling for FPS")
+    ap.add_argument("--speed", type=float, default=1.0, help="Playback speed scaling → affects FPS")
     ap.add_argument("--dpi", type=int, default=120, help="DPI for rendering")
     args = ap.parse_args()
 
-    bag_dir = os.path.expanduser(args.bag.rstrip("/"))
-    T, X, Y, YAW = read_series(bag_dir, args.topic)
+    # Resolve CSV
+    if args.csv:
+        csv_path = os.path.expanduser(args.csv)
+    else:
+        csv_path = find_latest_csv(os.path.expanduser(args.bags_dir), args.prefix)
+
+    print(f"Reading CSV: {csv_path}")
+    T, X, Y, YAW = load_csv(csv_path)
+    N = len(T)
+    if N == 0:
+        sys.exit("CSV contains no rows.")
 
     # Figure & axes
     fig, ax = plt.subplots(figsize=(7, 7))
     ax.set_aspect("equal")
 
     # Bounds with margins
-    xm, xM = float(X.min()), float(X.max())
-    ym, yM = float(Y.min()), float(Y.max())
+    xm, xM = float(np.nanmin(X)), float(np.nanmax(X))
+    ym, yM = float(np.nanmin(Y)), float(np.nanmax(Y))
     pad = max(0.5, 0.1 * max(xM - xm, yM - ym, 1.0))
     ax.set_xlim(xm - pad, xM + pad)
     ax.set_ylim(ym - pad, yM + pad)
@@ -136,14 +141,13 @@ def main():
     square_edges = [ax.plot([], [], lw=2.0)[0] for _ in range(4)]                # robot body square
     t_txt = ax.text(0.02, 0.98, "", transform=ax.transAxes, va="top")
 
-    # Frame timing → interval (ms) and FPS
-    if len(T) > 1:
+    # Frame timing → FPS (estimate from median dt and scale by speed)
+    if N > 1:
         median_dt = float(np.median(np.diff(T)))
     else:
-        median_dt = 1.0 / 30.0  # fallback
-
-    interval_ms = max(10.0, (median_dt / max(args.speed, 1e-6)) * 1000.0)
-    fps = max(10, int(1000.0 / interval_ms))
+        median_dt = 1.0 / 30.0
+    fps = max(10, min(60, int((1.0 / max(median_dt, 1e-6)) * max(args.speed, 1e-6))))
+    interval_ms = 1000.0 / fps
 
     # Local (centered) square corners: TL, TR, BR, BL
     s = args.box_side * 0.5
@@ -194,9 +198,8 @@ def main():
 
     anim = animation.FuncAnimation(
         fig, update, init_func=init,
-        frames=len(T), interval=int(interval_ms),
-        blit=False,           # robust saving
-        repeat=False
+        frames=N, interval=int(interval_ms),
+        blit=False, repeat=False
     )
 
     # Save MP4 next to this .py file with broadly compatible settings
