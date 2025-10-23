@@ -65,9 +65,8 @@ class EkfOdomNode(Node):
         self.declare_parameter('ekf_rate_hz', 200.0)
 
         # Diff-drive model params
-        self.declare_parameter('rho', 0.075)             # wheel radius [m]
+        self.declare_parameter('rho', 0.040)             # wheel radius [m]
         self.declare_parameter('half_track_l', 0.065)    # half track [m]
-        self.declare_parameter('unit_to_radps', 8.0)     # wheel rad/s per teleop "unit"
 
         # Process covariance diag (x,y,phi,u,r)
         self.declare_parameter('q_x',   1e-4)
@@ -104,7 +103,6 @@ class EkfOdomNode(Node):
         self.ekf_rate_hz = float(self.get_parameter('ekf_rate_hz').value)
         self.rho         = float(self.get_parameter('rho').value)
         self.l           = float(self.get_parameter('half_track_l').value)
-        self.unit_to_radps = float(self.get_parameter('unit_to_radps').value)
 
         self.Q = np.diag([
             float(self.get_parameter('q_x').value),
@@ -140,6 +138,7 @@ class EkfOdomNode(Node):
 
         # Publisher
         self.ekf_odom_pub = self.create_publisher(Odometry, self.ekf_odom, 10)
+
         # Optional TF
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
 
@@ -206,12 +205,11 @@ class EkfOdomNode(Node):
         vx = msg.twist.twist.linear.x
         vy = msg.twist.twist.linear.y
         wz = msg.twist.twist.angular.z
-        u_mag = math.hypot(vx, vy)
 
         if self._imu_count % max(1, self.log_every_n) == 0:
             self.get_logger().info(
                 f"[IMU ODOM] t={t.nanoseconds*1e-9:.3f}s  dt={0.0 if math.isnan(dt) else dt:.3f}s | "
-                f"yaw={yaw:+.3f} rad | v=({vx:+.3f},{vy:+.3f}) m/s | |v|={u_mag:.3f} | r={wz:+.3f} rad/s"
+                f"yaw={yaw:+.3f} rad | u,v=({vx:+.3f},{vy:+.3f}) m/s | r={wz:+.3f} rad/s"
             )
 
     def _cb_wheel_cmd(self, msg: Vector3Stamped):
@@ -228,17 +226,17 @@ class EkfOdomNode(Node):
         if self._imu_count % max(1, self.log_every_n) == 0:
             self.get_logger().info(
                 f"[WHEEL CMD] t={t.nanoseconds*1e-9:.3f}s  dt={0.0 if math.isnan(dt) else dt:.3f}s | "
-                f"L={L:+.3f}  R={R:+.3f}  (dur_since_change={dur:.2f}s)  buf={len(self.cmd_buf)}"
+                f"L={L:+.3f} rad/s  R={R:+.3f} rad/s  (dur_since_change={dur:.2f}s)  buf={len(self.cmd_buf)}"
             )
 
     # ========= EKF helpers =========
     def _lookup_cmd_at(self, t_sec: float) -> Tuple[float, float]:
-        """Return (tau_L, tau_R) [rad/s] for the interval ending at t_sec.
+        """Return (omega_L, omega_R) [rad/s] for the interval ending at t_sec.
         Strategy: last entry with stamp <= t_sec; if none, zeros.
         """
-        tau_L = tau_R = 0.0
+        omega_L = omega_R = 0.0
         if not self.cmd_buf:
-            return tau_L, tau_R
+            return omega_L, omega_R
 
         idx = -1
         for i in range(len(self.cmd_buf)-1, -1, -1):
@@ -249,17 +247,17 @@ class EkfOdomNode(Node):
             return 0.0, 0.0
 
         _, L, R, _ = self.cmd_buf[idx]
-        return float(self.unit_to_radps * L), float(self.unit_to_radps * R)
+        return float(L), float(R)
 
-    def _predict(self, z: np.ndarray, P: np.ndarray, dt: float, tau_L: float, tau_R: float):
+    def _predict(self, z: np.ndarray, P: np.ndarray, dt: float, omega_L: float, omega_R: float):
         x, y, phi, u, r = z.flatten()
 
         # Motion model
         x_p   = x + math.cos(phi) * u * dt
         y_p   = y + math.sin(phi) * u * dt
         phi_p = wrap_pi(phi + r * dt)
-        u_p   = 0.5 * self.rho * (tau_L + tau_R)
-        r_p   = (self.rho / (2.0 * self.l)) * (tau_R - tau_L)
+        u_p   = 0.5 * self.rho * (omega_L + omega_R)
+        r_p   = (self.rho / (2.0 * self.l)) * (omega_R - omega_L)
         z_pred = np.array([[x_p], [y_p], [phi_p], [u_p], [r_p]], dtype=float)
 
         # Jacobian wrt z
@@ -347,10 +345,10 @@ class EkfOdomNode(Node):
             return
 
         # Look up control for the interval ending at this IMU time
-        tau_L, tau_R = self._lookup_cmd_at(t_sec)
+        omega_L, omega_R = self._lookup_cmd_at(t_sec)
 
         # Predict & Update
-        z_pred, P_pred = self._predict(self.z, self.P, dt, tau_L, tau_R)              #\hat{z}_{k|k-1}, P_{k|k-1}
+        z_pred, P_pred = self._predict(self.z, self.P, dt, omega_L, omega_R)          #\hat{z}_{k|k-1}, P_{k|k-1}
         z_upd, P_upd, innov = self._update(z_pred, P_pred, phi_meas, u_meas, r_meas)  #\hat{z}_{k|k}, P_{k|k}
 
         # Commit
@@ -362,10 +360,10 @@ class EkfOdomNode(Node):
         if self._ekf_steps % max(1, self.log_every_n) == 0:
             self.get_logger().info(
                 "EKF | dt={:.3f}s | "
-                "ctrl: tau_L={:+.3f} rad/s, tau_R={:+.3f} rad/s | "
+                "ctrl: omega_L={:+.3f} rad/s, omega_R={:+.3f} rad/s | "
                 "innov: dphi={:+.3f} rad, du={:+.3f} m/s, dr={:+.3f} rad/s | "
                 "ẑ: x={:+.3f} m, y={:+.3f} m, φ={:+.3f} rad, u={:+.3f} m/s, r={:+.3f} rad/s".format(
-                    dt, tau_L, tau_R,
+                    dt, omega_L, omega_R,
                     innov[0, 0], innov[1, 0], innov[2, 0],
                     self.z[0, 0], self.z[1, 0], self.z[2, 0], self.z[3, 0], self.z[4, 0]
                 )

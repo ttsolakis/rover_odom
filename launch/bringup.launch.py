@@ -10,6 +10,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 from datetime import datetime
 import os
+from launch.actions import TimerAction
 
 def generate_launch_description():
 
@@ -24,25 +25,25 @@ def generate_launch_description():
     #     description='Open a separate terminal for logger_cmd_vel_yaw.'
     # )
 
-    record_ekf_bag_arg = DeclareLaunchArgument(
-        'record_ekf_bag', default_value='false',
-        description='If true, record /ekf_odom to ~/bags/ekf_drive_<timestamp>/.'
+    record_rover_bag_arg = DeclareLaunchArgument(
+        'record_rover_bag', default_value='false',
+        description='If true, record ros messages to ~/bags/rover_<timestamp>/.'
     )
 
     # ========== Launch components ==========
 
-    # # 1) LiDAR driver
-    # sllidar_pkg = get_package_share_directory('sllidar_ros2')
-    # lidar_launch = IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource(
-    #         os.path.join(sllidar_pkg, 'launch', 'sllidar_c1_launch.py')
-    #     ),
-    #     launch_arguments={
-    #         'serial_port': '/dev/rplidar',
-    #         'serial_baudrate': '460800',
-    #         'frame_id': 'lidar_link'
-    #     }.items()
-    # )
+    # 1) LiDAR driver
+    sllidar_pkg = get_package_share_directory('sllidar_ros2')
+    lidar_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(sllidar_pkg, 'launch', 'sllidar_c1_launch.py')
+        ),
+        launch_arguments={
+            'serial_port': '/dev/rplidar',
+            'serial_baudrate': '460800',
+            'frame_id': 'lidar_link'
+        }.items()
+    )
 
     # 2) IMU → Odometry (include your parameterized launch)
     rover_pkg = get_package_share_directory('rover_odom')
@@ -73,57 +74,57 @@ def generate_launch_description():
             'publish_tf': 'false',
             'odom_frame': 'odom',
             'base_link_frame': 'base_link',
-            'topic_name': '/imu_odom',
+            'imu_topic': '/imu_odom',
             'timeout_s': '1.0',
             'apply_mounting_tf_in_odom': 'true',
         }.items()
     )
 
-    # # 3) slam_toolbox
-    # slam = Node(
-    #     package='slam_toolbox',
-    #     executable='sync_slam_toolbox_node',
-    #     name='slam_toolbox',
-    #     output='screen',
-    #     parameters=[{
-    #         'use_sim_time': False,
-    #         'base_frame': 'base_link',
-    #         'odom_frame': 'odom',
-    #         'map_frame': 'map',
-    #         'scan_topic': '/scan',
-    #         'use_odometry': False,
-    #         }]
-    # )
+    # 3) slam_toolbox
+    slam = Node(
+        package='slam_toolbox',
+        executable='sync_slam_toolbox_node',
+        name='slam_toolbox',
+        output='screen',
+        parameters=[{
+            'use_sim_time': False,
+            'base_frame': 'base_link',
+            'odom_frame': 'odom',
+            'map_frame': 'map',
+            'scan_topic': '/scan',
+            'use_odometry': False,
+            }]
+    )
 
-    # # 4) Lifecycle manager to auto-configure/activate slam_toolbox
-    # lifecycle_manager = Node(
-    #     package='nav2_lifecycle_manager',
-    #     executable='lifecycle_manager',
-    #     name='lifecycle_manager_slam',
-    #     output='screen',
-    #     parameters=[{
-    #         'use_sim_time': False,
-    #         'autostart': True,
-    #         'node_names': ['slam_toolbox'],
-    #         }]
-    # )
+    # 4) Lifecycle manager to auto-configure/activate slam_toolbox
+    lifecycle_manager = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_slam',
+        output='screen',
+        parameters=[{
+            'use_sim_time': False,
+            'autostart': True,
+            'node_names': ['slam_toolbox'],
+            }]
+    )
 
-    # # 5) Robot State Publisher for the URDF
-    # urdf_path  = PathJoinSubstitution([FindPackageShare('rover_odom'), 'urdf', 'rover.urdf.xacro'])
-    # xacro_exec = FindExecutable(name='xacro')
-    # robot_state_pub = Node(
-    #     package='robot_state_publisher',
-    #     executable='robot_state_publisher',
-    #     name='robot_state_publisher',
-    #     parameters=[{
-    #         # Use ParameterValue to force string type, and build the command with an explicit space
-    #         'robot_description': ParameterValue(
-    #             Command([xacro_exec, ' ', urdf_path]),
-    #             value_type=str
-    #         )
-    #         }],
-    #     output='screen'
-    # )
+    # 5) Robot State Publisher for the URDF
+    urdf_path  = PathJoinSubstitution([FindPackageShare('rover_odom'), 'urdf', 'rover.urdf.xacro'])
+    xacro_exec = FindExecutable(name='xacro')
+    robot_state_pub = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        parameters=[{
+            # Use ParameterValue to force string type, and build the command with an explicit space
+            'robot_description': ParameterValue(
+                Command([xacro_exec, ' ', urdf_path]),
+                value_type=str
+            )
+            }],
+        output='screen'
+    )
 
     # # 6) RViz
     # rviz_config = os.path.join(get_package_share_directory('rover_odom'), 'rviz', 'rover_mapping.rviz')
@@ -166,7 +167,6 @@ def generate_launch_description():
             'base_link_frame': 'base_link',
             'log_every_n': 20,
             'cmd_buffer_size': 500,
-            'unit_to_radps': 1.0,
         }],
     )
 
@@ -205,31 +205,52 @@ def generate_launch_description():
     #         }]
     # )
 
-    # 11) Optional: ros2 bag record /ekf_odom → ~/bags/ekf_drive_<timestamp>/
+    # 11) Optional: ros2 bag record (recommended set) → ~/bags/rover_<timestamp>/
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     bags_dir = os.path.expanduser('~/bags')
     os.makedirs(bags_dir, exist_ok=True)
-    bag_out = os.path.join(bags_dir, f'ekf_drive_{timestamp}')
+    bag_out = os.path.join(bags_dir, f'rover_{timestamp}')
+
+    topics = [
+        '/ekf_odom',
+        '/scan',
+        '/tf',
+        '/tf_static',
+        '/imu_odom',
+        '/wheel_cmd',
+    ]
+
     bag_record = ExecuteProcess(
-        cmd=['ros2', 'bag', 'record', '-o', bag_out, '/ekf_odom'],
+        cmd=[
+            'ros2', 'bag', 'record',
+            '--compression-mode', 'file',
+            '--compression-format', 'zstd',
+            '-o', bag_out,
+            *topics,
+        ],
         output='screen',
-        condition=IfCondition(LaunchConfiguration('record_ekf_bag')),
+    )
+
+    bag_record_delayed = TimerAction(
+        period=5.0,
+        actions=[bag_record],
+        condition=IfCondition(LaunchConfiguration('record_rover_bag')),
     )
 
 
     return LaunchDescription([
         start_teleop_arg,
         # start_logger_arg,
-        record_ekf_bag_arg, 
-        # lidar_launch,
+        record_rover_bag_arg, 
+        lidar_launch,
         imu_odom_launch,
-        # slam,
-        # lifecycle_manager,
-        # robot_state_pub,
+        slam,
+        lifecycle_manager,
+        robot_state_pub,
         # rviz,
         teleop,
         ekf,
         # logger_term,
         # logger_imu_cmd_vel,
-        bag_record,
+        bag_record_delayed,
     ])
