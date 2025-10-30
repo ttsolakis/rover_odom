@@ -92,7 +92,7 @@ def generate_launch_description():
             'odom_frame': 'odom',
             'map_frame': 'map',
             'scan_topic': '/scan',
-            'use_odometry': False,
+            'use_odometry': True,
             }]
     )
 

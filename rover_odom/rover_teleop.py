@@ -75,7 +75,7 @@ class RoverTeleop(Node):
         _max_base = max(abs(self._base_f), abs(self._base_r), abs(self._base_t), 1e-6)
         self._ratio_f = self._base_f / _max_base
         self._ratio_r = self._base_r / _max_base
-        self._ratio_t = self._base_t / _max_base
+        self._ratio_t = (self._base_t / _max_base) * 1.6  # turn a bit more aggressively cause of nonholonomic in place rotation
 
         # Number keys pick absolute magnitudes (0.1 .. 0.5)
         self._levels_abs = {'1': 0.1, '2': 0.2, '3': 0.3, '4': 0.4, '5': 0.5}
