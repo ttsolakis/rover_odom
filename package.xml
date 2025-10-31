@@ -29,20 +29,21 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
 
-  <!-- Numeric library used by EKF -->
+  <!-- Numeric + HTTP libs used by nodes -->
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-requests</exec_depend>
 
-  <!-- Things our bringup.launch.py starts -->
+  <!-- Things bringup.launch.py starts -->
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>
   <exec_depend>sllidar_ros2</exec_depend>
 
-  <!-- Optional tools/viewers (commented blocks in launch) -->
+  <!-- Optional tools/viewers -->
   <exec_depend>rviz2</exec_depend>
   <!-- Only needed if record_rover_bag:=true -->
-  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosbag2</exec_depend>
 
   <!-- Lint/test (optional) -->
   <test_depend>ament_lint_auto</test_depend>
