@@ -10,10 +10,15 @@ from collections import deque
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Bool, Float32
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import TransformStamped, Vector3Stamped
 from tf2_ros import TransformBroadcaster
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+ready_qos = QoSProfile(depth=1,
+                       reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       history=HistoryPolicy.KEEP_LAST)
 
 def rpy_to_quat(roll, pitch, yaw):
     cr = math.cos(roll/2); sr = math.sin(roll/2)
@@ -359,6 +364,16 @@ class ImuJsonToOdom(Node):
         self.q_imu_to_base = quat_conj(q_base_from_imu)
         self.q_imu_to_base = quat_normalize(self.q_imu_to_base)
 
+        # Publisher for IMU readiness
+        self.pub_auto_level_ready = self.create_publisher(Bool, '/auto_level_ready', ready_qos)
+        self._ready_published = False
+
+        if not self.auto_level:
+            self.pub_auto_level_ready.publish(Bool(data=True))
+            self._ready_published = True
+            self.q_align = (0.0, 0.0, 0.0, 1.0) 
+            self.get_logger().info("Auto-level disabled → publishing /auto_level_ready immediately.")
+
         # Publisher / TF
         self.odom_pub = self.create_publisher(Odometry, self.imu_topic, 10)
         self.tf_broadcaster: Optional[TransformBroadcaster] = (
@@ -484,7 +499,12 @@ class ImuJsonToOdom(Node):
                     q_tilt = quat_from_two_vectors((ax_mean, ay_mean, az_mean), (0.0, 0.0, self.g))
                     self.q_align = quat_normalize(q_tilt)
                     self._calib_done = True
+                    
+                if self._calib_done and not self._ready_published:
                     self.get_logger().info(f"Auto-level complete (samples={self._calib_count}).")
+                    self.pub_auto_level_ready.publish(Bool(data=True))
+                    self._ready_published = True
+                    
 
             # Quaternion as reported by the IMU (in imu_link frame)
             qx, qy, qz, qw = euler_zyx_to_quat(r, p, y)

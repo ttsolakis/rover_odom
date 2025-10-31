@@ -11,8 +11,16 @@ from rclpy.time import Time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Bool
 from geometry_msgs.msg import Vector3Stamped, TransformStamped
 from tf2_ros import TransformBroadcaster  
+
+ready_qos = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+)
 
 def quat_from_yaw(yaw: float):
     """Quaternion (x,y,z,w) for a pure yaw."""
@@ -162,6 +170,10 @@ class EkfOdomNode(Node):
             Vector3Stamped, self.wheel_cmd_topic, self._cb_wheel_cmd, cmd_qos
         )
 
+        self._ready_sub = self.create_subscription(
+            Bool, "/auto_level_ready", self._cb_ready, ready_qos
+        )
+
         # --- State for validation/logging ---
         self._imu_count = 0
         self._last_imu_time: Optional[Time] = None
@@ -169,8 +181,13 @@ class EkfOdomNode(Node):
 
         # Store last messages (for the EKF timer to consume)
         self.last_imu_odom: Optional[Odometry] = None
+
         # Ring buffer of (stamp_sec, L, R, duration_s)
         self.cmd_buf: Deque[Tuple[float, float, float, float]] = deque(maxlen=self.cmd_buffer_size)
+
+        # --- Auto-level state ---
+        self._auto_level_ready = False
+        self._waiting_logged_once = False
 
         # --- EKF runtime state ---
         self.z = np.zeros((5, 1), dtype=float)   # state estimate: [x,y,phi,u,r]^T
@@ -191,6 +208,11 @@ class EkfOdomNode(Node):
 
 
     # ========= Store-only callbacks (unchanged behavior) =========
+    def _cb_ready(self, msg: Bool):
+        if msg.data and not self._auto_level_ready:
+            self._auto_level_ready = True
+            self.get_logger().info(f"Auto-level is complete: EKF starts processing. . .")
+
     def _cb_imu_odom(self, msg: Odometry):
         self._imu_count += 1
         self.last_imu_odom = msg
@@ -206,11 +228,11 @@ class EkfOdomNode(Node):
         vy = msg.twist.twist.linear.y
         wz = msg.twist.twist.angular.z
 
-        if self._imu_count % max(1, self.log_every_n) == 0:
-            self.get_logger().info(
-                f"[IMU ODOM] t={t.nanoseconds*1e-9:.3f}s  dt={0.0 if math.isnan(dt) else dt:.3f}s | "
-                f"yaw={yaw:+.3f} rad | u,v=({vx:+.3f},{vy:+.3f}) m/s | r={wz:+.3f} rad/s"
-            )
+        # if self._imu_count % max(1, self.log_every_n) == 0:
+        #     self.get_logger().info(
+        #         f"[IMU ODOM] t={t.nanoseconds*1e-9:.3f}s  dt={0.0 if math.isnan(dt) else dt:.3f}s | "
+        #         f"yaw={yaw:+.3f} rad | u,v=({vx:+.3f},{vy:+.3f}) m/s | r={wz:+.3f} rad/s"
+        #     )
 
     def _cb_wheel_cmd(self, msg: Vector3Stamped):
         t = Time.from_msg(msg.header.stamp)
@@ -223,11 +245,11 @@ class EkfOdomNode(Node):
 
         self.cmd_buf.append((t.nanoseconds * 1e-9, L, R, dur))
 
-        if self._imu_count % max(1, self.log_every_n) == 0:
-            self.get_logger().info(
-                f"[WHEEL CMD] t={t.nanoseconds*1e-9:.3f}s  dt={0.0 if math.isnan(dt) else dt:.3f}s | "
-                f"L={L:+.3f} rad/s  R={R:+.3f} rad/s  (dur_since_change={dur:.2f}s)  buf={len(self.cmd_buf)}"
-            )
+        # if self._imu_count % max(1, self.log_every_n) == 0:
+        #     self.get_logger().info(
+        #         f"[WHEEL CMD] t={t.nanoseconds*1e-9:.3f}s  dt={0.0 if math.isnan(dt) else dt:.3f}s | "
+        #         f"L={L:+.3f} rad/s  R={R:+.3f} rad/s  (dur_since_change={dur:.2f}s)  buf={len(self.cmd_buf)}"
+        #     )
 
     # ========= EKF helpers =========
     def _lookup_cmd_at(self, t_sec: float) -> Tuple[float, float]:
@@ -300,6 +322,13 @@ class EkfOdomNode(Node):
     # ========= EKF timer (does the actual work) =========
     def _ekf_tick(self):
         """Run EKF when a NEW IMU odom stamp is available. Otherwise do nothing."""
+
+        if not self._auto_level_ready:
+            if not self._waiting_logged_once:
+                self.get_logger().info("Waiting for auto-level to complete...")
+                self._waiting_logged_once = True
+            return
+
         if self.last_imu_odom is None:
             return
 
@@ -339,8 +368,8 @@ class EkfOdomNode(Node):
             self.initialized = True
             self._last_processed_imu_sec = t_sec
             self.get_logger().info(
-                f"EKF initialized: z0=[x={self.z[0,0]:+.3f}, y={self.z[1,0]:+.3f}, "
-                f"phi={self.z[2,0]:+.3f}, u={self.z[3,0]:+.3f}, r={self.z[4,0]:+.3f}]"
+                f"EKF initialized at:  x={self.z[0,0]:+.3f} m, y={self.z[1,0]:+.3f} m, "
+                f"φ={self.z[2,0]:+.3f} rad, u={self.z[3,0]:+.3f} m/s, r={self.z[4,0]:+.3f} rad/s"
             )
             return
 
@@ -358,15 +387,25 @@ class EkfOdomNode(Node):
 
         # Periodic logging
         if self._ekf_steps % max(1, self.log_every_n) == 0:
+
+            # self.get_logger().info(
+            #     "EKF | dt={:.3f}s | "
+            #     "ctrl: omega_L={:+.3f} rad/s, omega_R={:+.3f} rad/s | "
+            #     "innov: dphi={:+.3f} rad, du={:+.3f} m/s, dr={:+.3f} rad/s | "
+            #     "ẑ: x={:+.3f} m, y={:+.3f} m, φ={:+.3f} rad, u={:+.3f} m/s, r={:+.3f} rad/s".format(
+            #         dt, omega_L, omega_R,
+            #         innov[0, 0], innov[1, 0], innov[2, 0],
+            #         self.z[0, 0], self.z[1, 0], self.z[2, 0], self.z[3, 0], self.z[4, 0]
+            #     )
+
             self.get_logger().info(
                 "EKF | dt={:.3f}s | "
-                "ctrl: omega_L={:+.3f} rad/s, omega_R={:+.3f} rad/s | "
-                "innov: dphi={:+.3f} rad, du={:+.3f} m/s, dr={:+.3f} rad/s | "
                 "ẑ: x={:+.3f} m, y={:+.3f} m, φ={:+.3f} rad, u={:+.3f} m/s, r={:+.3f} rad/s".format(
                     dt, omega_L, omega_R,
                     innov[0, 0], innov[1, 0], innov[2, 0],
                     self.z[0, 0], self.z[1, 0], self.z[2, 0], self.z[3, 0], self.z[4, 0]
                 )
+
             )
 
         # ---------- Publish EKF odometry ----------

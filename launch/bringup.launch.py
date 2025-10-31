@@ -93,6 +93,8 @@ def generate_launch_description():
             'map_frame': 'map',
             'scan_topic': '/scan',
             'use_odometry': True,
+            'transform_publish_period': 0.05,
+            'max_laser_range': 16.0,
             }]
     )
 
@@ -105,6 +107,7 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': False,
             'autostart': True,
+            'bond_timeout': 45.0,
             'node_names': ['slam_toolbox'],
             }]
     )
@@ -126,15 +129,15 @@ def generate_launch_description():
         output='screen'
     )
 
-    # # 6) RViz
-    # rviz_config = os.path.join(get_package_share_directory('rover_odom'), 'rviz', 'rover_mapping.rviz')
-    # rviz = Node(
-    #     package='rviz2',
-    #     executable='rviz2',
-    #     name='rviz2',
-    #     output='screen',
-    #     arguments=['-d', rviz_config]
-    # )
+    # 6) RViz
+    rviz_config = os.path.join(get_package_share_directory('rover_odom'), 'rviz', 'rover_mapping.rviz')
+    rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', rviz_config]
+    )
 
     # 7) Teleop (WASD) in a separate terminal so it can read keys
     #    Requires a terminal emulator; change to xterm/konsole/kitty if you prefer.
@@ -231,11 +234,10 @@ def generate_launch_description():
         output='screen',
     )
 
-    bag_record_delayed = TimerAction(
-        period=5.0,
-        actions=[bag_record],
-        condition=IfCondition(LaunchConfiguration('record_rover_bag')),
-    )
+    bag_record_delayed = TimerAction(period=5.0, actions=[bag_record], condition=IfCondition(LaunchConfiguration('record_rover_bag')))
+    slam_delayed = TimerAction(period=6.0, actions=[slam])
+    lifecycle_manager_delayed = TimerAction(period=8.0, actions=[lifecycle_manager])
+    rviz_delayed = TimerAction(period=10.0, actions=[rviz])
 
 
     return LaunchDescription([
@@ -244,10 +246,10 @@ def generate_launch_description():
         record_rover_bag_arg, 
         lidar_launch,
         imu_odom_launch,
-        slam,
-        lifecycle_manager,
+        slam_delayed,
+        lifecycle_manager_delayed,
         robot_state_pub,
-        # rviz,
+        rviz_delayed,
         teleop,
         ekf,
         # logger_term,
