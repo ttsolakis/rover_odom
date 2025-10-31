@@ -2,7 +2,13 @@
 <package format="3">
   <name>rover_odom</name>
   <version>0.1.0</version>
-  <description>Minimal package with node converting IMU JSON data into nav_msgs/Odometry messages and fusing wheel speeds (future work).</description>
+  <description>
+    Nodes to:
+    1) read/integrate IMU data publishing /imu_odom, 
+    2) simple keyboard teleop publishing /wheel_cmd, 
+    3) and an EKF that fuses /imu_odom with /wheel_cmd publishing /ekf_odom.
+    Includes bringup for LiDAR + SLAM.
+  </description>
 
   <maintainer email="tas.tsolakis@gmail.com">tasos</maintainer>
   <license>MIT</license>
@@ -10,25 +16,40 @@
   <!-- Build system -->
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <!-- Runtime dependencies -->
+  <!-- Launch infra used by our own launch files -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <!-- Our Python nodes -->
   <exec_depend>rclpy</exec_depend>
-  <exec_depend>nav_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+
+  <!-- Numeric library used by EKF -->
+  <exec_depend>python3-numpy</exec_depend>
+
+  <!-- Things our bringup.launch.py starts -->
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>sllidar_ros2</exec_depend>
+
+  <!-- Optional tools/viewers (commented blocks in launch) -->
   <exec_depend>rviz2</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>python3-requests</exec_depend>
+  <!-- Only needed if record_rover_bag:=true -->
+  <exec_depend>ros2bag</exec_depend>
 
-
-  <!-- Optional: for tests (can remove if you don’t care) -->
+  <!-- Lint/test (optional) -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
   <export>
-    <!-- Needed for Python packages -->
     <build_type>ament_python</build_type>
   </export>
 </package>
+
