@@ -20,6 +20,30 @@ ready_qos = QoSProfile(depth=1,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL,
                        history=HistoryPolicy.KEEP_LAST)
 
+def quat_to_rpy_deg(qx: float, qy: float, qz: float, qw: float):
+    """
+    Return (roll_deg, pitch_deg, yaw_deg) from quaternion (x,y,z,w) using ZYX (yaw-pitch-roll) convention.
+    """
+    # roll (x-axis rotation)
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx*qx + qy*qy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    # pitch (y-axis rotation)
+    sinp = 2.0 * (qw * qy - qz * qx)
+    # clamp to handle numerical drift
+    if abs(sinp) >= 1.0:
+        pitch = math.copysign(math.pi / 2.0, sinp)
+    else:
+        pitch = math.asin(sinp)
+
+    # yaw (z-axis rotation)
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy*qy + qz*qz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return (math.degrees(roll), math.degrees(pitch), math.degrees(yaw))
+
 def rpy_to_quat(roll, pitch, yaw):
     cr = math.cos(roll/2); sr = math.sin(roll/2)
     cp = math.cos(pitch/2); sp = math.sin(pitch/2)
@@ -519,6 +543,7 @@ class ImuJsonToOdom(Node):
             q_imu = quat_normalize((qx, qy, qz, qw))
             if self.apply_mounting_tf:      
                 qx, qy, qz, qw = quat_mul(q_total, q_imu)  
+                # qx, qy, qz, qw = quat_mul(q_imu, q_total)  TODO: Check which one is right!!!
                 gx, gy, gz = rotate_vec_by_quat((gx, gy, gz), q_total)
                 ax, ay, az = rotate_vec_by_quat((ax, ay, az), q_total)
             else:
@@ -566,6 +591,10 @@ class ImuJsonToOdom(Node):
         odom.pose.pose.orientation.z = qz
         odom.pose.pose.orientation.w = qw
 
+          # --- DEBUG: print RPY in degrees ---
+        roll_deg, pitch_deg, yaw_deg = quat_to_rpy_deg(qx, qy, qz, qw)
+        self.get_logger().info(f"RPY_deg: roll={roll_deg:+6.2f}  pitch={pitch_deg:+6.2f}  yaw={yaw_deg:+6.2f}")
+
         if self.raw_accel_debug_mode:
             odom.twist.twist.linear.x = ax_raw
             odom.twist.twist.linear.y = ay_raw
@@ -581,19 +610,19 @@ class ImuJsonToOdom(Node):
 
         self.odom_pub.publish(odom)
 
-        if self.tf_broadcaster:
-            t = TransformStamped()
-            t.header.stamp = now
-            t.header.frame_id = self.odom_frame
-            t.child_frame_id = self.base_link
-            t.transform.translation.x = 0.0
-            t.transform.translation.y = 0.0
-            t.transform.translation.z = 0.0
-            t.transform.rotation.x = qx
-            t.transform.rotation.y = qy
-            t.transform.rotation.z = qz
-            t.transform.rotation.w = qw
-            self.tf_broadcaster.sendTransform(t)
+        # if self.tf_broadcaster:
+        #     t = TransformStamped()
+        #     t.header.stamp = now
+        #     t.header.frame_id = self.odom_frame
+        #     t.child_frame_id = self.base_link
+        #     t.transform.translation.x = 0.0
+        #     t.transform.translation.y = 0.0
+        #     t.transform.translation.z = 0.0
+        #     t.transform.rotation.x = qx
+        #     t.transform.rotation.y = qy
+        #     t.transform.rotation.z = qz
+        #     t.transform.rotation.w = qw
+        #     self.tf_broadcaster.sendTransform(t)
 
 
 def main():

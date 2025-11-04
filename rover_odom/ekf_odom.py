@@ -399,13 +399,10 @@ class EkfOdomNode(Node):
             #     )
 
             self.get_logger().info(
-                "EKF | dt={:.3f}s | "
-                "ẑ: x={:+.3f} m, y={:+.3f} m, φ={:+.3f} rad, u={:+.3f} m/s, r={:+.3f} rad/s".format(
-                    dt, omega_L, omega_R,
-                    innov[0, 0], innov[1, 0], innov[2, 0],
-                    self.z[0, 0], self.z[1, 0], self.z[2, 0], self.z[3, 0], self.z[4, 0]
-                )
-
+                f"EKF | dt={dt:.3f}s | "
+                f"ẑ: x={float(self.z[0,0]):+.3f} m, y={float(self.z[1,0]):+.3f} m, "
+                f"φ={float(self.z[2,0]):+.3f} rad, u={float(self.z[3,0]):+.3f} m/s, "
+                f"r={float(self.z[4,0]):+.3f} rad/s"
             )
 
         # ---------- Publish EKF odometry ----------
@@ -436,12 +433,12 @@ class EkfOdomNode(Node):
         pose_cov = [0.0]*36
         # indices: (i,j) -> i*6+j
         P = self.P
-        pose_cov[0]  = float(P[0,0])             # var(x)
+        pose_cov[0]  = float(P[0,0])                                # var(x)
         pose_cov[1]  = float(P[0,1]); pose_cov[6]  = float(P[1,0])  # cov(x,y)
-        pose_cov[7]  = float(P[1,1])             # var(y)
+        pose_cov[7]  = float(P[1,1])                                # var(y)
         pose_cov[5]  = float(P[0,2]); pose_cov[30] = float(P[2,0])  # cov(x,yaw)
         pose_cov[11] = float(P[1,2]); pose_cov[31] = float(P[2,1])  # cov(y,yaw)
-        pose_cov[35] = float(P[2,2])             # var(yaw)
+        pose_cov[35] = float(P[2,2])                                # var(yaw)
         # large uncertainty for z, roll, pitch
         big = 1e3
         pose_cov[14] = big   # var(z)

@@ -107,7 +107,6 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': False,
             'autostart': True,
-            'bond_timeout': 45.0,
             'node_names': ['slam_toolbox'],
             }]
     )
