@@ -593,7 +593,7 @@ class ImuJsonToOdom(Node):
 
           # --- DEBUG: print RPY in degrees ---
         roll_deg, pitch_deg, yaw_deg = quat_to_rpy_deg(qx, qy, qz, qw)
-        self.get_logger().info(f"RPY_deg: roll={roll_deg:+6.2f}  pitch={pitch_deg:+6.2f}  yaw={yaw_deg:+6.2f}")
+        # self.get_logger().info(f"RPY_deg: roll={roll_deg:+6.2f}  pitch={pitch_deg:+6.2f}  yaw={yaw_deg:+6.2f}")
 
         if self.raw_accel_debug_mode:
             odom.twist.twist.linear.x = ax_raw

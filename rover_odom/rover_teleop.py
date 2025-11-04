@@ -66,25 +66,30 @@ class RoverTeleop(Node):
         self.max_unit     = float(self.get_parameter('max_unit').value)
         self.max_apply_s  = float(self.get_parameter('max_apply_s').value)
 
-        # --- Fixed base magnitudes (used only to define ratios) ---
-        self._base_f = 0.5
-        self._base_r = 0.5
-        self._base_t = 0.5
+        # --- Command levels --
+        self.straight_min = 0.3
+        self.straight_max = 0.5
+        self.turn_min     = 0.4
+        self.turn_max     = 0.5
 
-        # Preserve proportions among F/R/T and scale by selected level
-        _max_base = max(abs(self._base_f), abs(self._base_r), abs(self._base_t), 1e-6)
-        self._ratio_f = self._base_f / _max_base
-        self._ratio_r = self._base_r / _max_base
-        self._ratio_t = (self._base_t / _max_base) * 1.6  # turn a bit more aggressively cause of nonholonomic in place rotation
+        def levels_lin(vmin, vmax):
+            step = (vmax - vmin) / 4.0
+            return {
+                '1': vmin + 0*step,
+                '2': vmin + 1*step,
+                '3': vmin + 2*step,
+                '4': vmin + 3*step,
+                '5': vmin + 4*step,
+            }
 
-        # Number keys pick absolute magnitudes (0.1 .. 0.5)
-        self._levels_abs = {'1': 0.1, '2': 0.2, '3': 0.3, '4': 0.4, '5': 0.5}
-        self._current_level = '3'  # default
+        self._levels_straight = levels_lin(self.straight_min, self.straight_max)  # W/S
+        self._levels_turn     = levels_lin(self.turn_min, self.turn_max)          # A/D
 
         # Active units (initialized by level)
-        self.f_unit = 0.0
-        self.r_unit = 0.0
-        self.t_unit = 0.0
+        self._current_level = '3'  # default
+        self.f_unit = 0.0          # used by W 
+        self.r_unit = 0.0          # used by S
+        self.t_unit = 0.0          # used by A/D
         self._apply_level(self._current_level)
 
         # --- Empirical cmd→ω fits (from your experiments) ---
@@ -118,22 +123,26 @@ class RoverTeleop(Node):
 
     # ========== Apply level of cmd ==========
     def _apply_level(self, key: str):
-        """Set units so that the largest of (f,r,t) equals the chosen absolute level, preserving ratios."""
-        L = self._levels_abs[key]  # absolute target in [0, 0.5]
-        # preserve F/R/T proportions from the base units
-        f = L * self._ratio_f
-        r = L * self._ratio_r
-        t = L * self._ratio_t
+        """
+        Set default magnitudes for straight (W/S) and turn-in-place (A/D)
+        according to level key '1'..'5':
+          - Straight: 0.30..0.50
+          - Turn:     0.40..0.50
+        """
+        # Lookup desired magnitudes
+        Ls = self._levels_straight.get(key, self._levels_straight['3'])
+        Lt = self._levels_turn.get(key, self._levels_turn['3'])
 
-        # clamp to max_unit (symmetric)
-        self.f_unit = clamp(f, -self.max_unit, self.max_unit)
-        self.r_unit = clamp(r, -self.max_unit, self.max_unit)
-        self.t_unit = clamp(t, -self.max_unit, self.max_unit)
+        # Clamp to max_unit (symmetric)
+        self.f_unit = clamp(Ls, -self.max_unit, self.max_unit)
+        self.r_unit = clamp(Ls, -self.max_unit, self.max_unit)
+        self.t_unit = clamp(Lt, -self.max_unit, self.max_unit)
 
         self._current_level = key
         self.get_logger().info(
-            f"[level {key}] target={L:.3f} → forward={self.f_unit:.3f}, reverse={self.r_unit:.3f}, turn={self.t_unit:.3f}"
+            f"[level {key}] straight={self.f_unit:.3f}  turn={self.t_unit:.3f}  (max_unit={self.max_unit:.3f})"
         )
+
 
     # ========== Timer heartbeat ==========
     def _tick(self):

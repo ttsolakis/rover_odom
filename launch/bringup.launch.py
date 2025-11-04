@@ -248,7 +248,7 @@ def generate_launch_description():
         slam_delayed,
         lifecycle_manager_delayed,
         robot_state_pub,
-        rviz_delayed,
+        # rviz_delayed,
         teleop,
         ekf,
         # logger_term,
