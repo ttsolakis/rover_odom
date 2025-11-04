@@ -236,8 +236,74 @@ def filter_and_unbias_acceleration(time_imu_seconds, accel_x_mps2, window_length
         # Return the latest sample's bias-corrected acceleration as a scalar
         return float(bias_corrected_acceleration)
 
+def filter_and_unbias_angular_velocity(time_imu_seconds,
+                                       yaw_rate_rad_s,
+                                       window_length=15,
+                                       poly_order=2,
+                                       angular_filtering=True):
+    """
+    Causal SG smoothing + simple bias removal for angular velocity (e.g., gz).
+    Stateless: learns bias from the provided buffer only and returns the
+    latest bias-corrected sample.
 
-def estimate_velocity_from_acceleration(time_imu_seconds, filtered_acceleration, cmd_wheel_rate_rad_s, previous_velocity_estimate_mps, wheel_radius_m, constant_velocity_threshold, zupt_speed_threshold_mps):
+    Returns: float (bias-corrected omega_z at the latest timestamp)
+    """
+
+    # --- pass-through until we have enough samples for SG + bias learning ---
+    t = np.asarray(time_imu_seconds, dtype=float)
+    w = np.asarray(yaw_rate_rad_s, dtype=float)
+    N = w.size
+    if N == 0:
+        return 0.0
+    if N < window_length:
+        return float(w[-1])
+
+    # --- Savitzky-Golay endpoint (causal) smoothing for last sample ---
+    dt_nominal = float(np.median(np.diff(t)))
+    assert window_length >= poly_order + 1, "window_length must be >= poly_order + 1"
+    h = causal_savitzky_golay_coeffs(window_length, poly_order, dt_nominal)
+
+    start_i = 0 if not angular_filtering else (window_length - 1)
+
+    # Bias learning params tuned for gyro:
+    hard_zero_when_stationary = True
+    stationary_abs_threshold_rad_s = 0.03   # ≈1.7°/s; tune 0.02–0.05
+    stationary_min_consecutive_samples = 10
+    bias_window_samples = stationary_min_consecutive_samples
+    zupt_window_values = deque(maxlen=bias_window_samples)
+
+    bias_estimate = 0.0
+    consecutive_stationary_count = 0
+    bias_corrected_omega = float(w[-1])  # fallback
+
+    for i in range(start_i, N):
+        # 1) filter
+        if angular_filtering:
+            window = w[i - window_length + 1 : i + 1][::-1]  # newest→oldest
+            filtered_value = float(np.dot(h, window))
+        else:
+            filtered_value = float(w[i])
+
+        # 2) bias from stationary segments
+        if abs(filtered_value) < stationary_abs_threshold_rad_s:
+            consecutive_stationary_count += 1
+            zupt_window_values.append(filtered_value)
+        else:
+            consecutive_stationary_count = 0
+            zupt_window_values.clear()
+
+        is_stationary = (consecutive_stationary_count >= stationary_min_consecutive_samples)
+        if is_stationary and len(zupt_window_values) == bias_window_samples:
+            bias_estimate = float(np.mean(zupt_window_values))
+
+        if is_stationary and hard_zero_when_stationary:
+            bias_corrected_omega = 0.0
+        else:
+            bias_corrected_omega = filtered_value - bias_estimate
+
+    return float(bias_corrected_omega)
+
+def integrate_acceleration_with_gating(time_imu_seconds, filtered_acceleration, cmd_wheel_rate_rad_s, previous_velocity_estimate_mps, wheel_radius_m, constant_velocity_window, zupt_speed_threshold_mps):
 
     # Need at least two samples everywhere we take last-two
     if len(time_imu_seconds) < 2 or len(filtered_acceleration) < 2 or len(cmd_wheel_rate_rad_s) < 2:
@@ -257,7 +323,7 @@ def estimate_velocity_from_acceleration(time_imu_seconds, filtered_acceleration,
 
     # --- 2) CUPT gating ---
     # Only run this when the buffer is exactly the chosen window size.
-    if len(cmd_wheel_rate_rad_s) == int(constant_velocity_threshold):
+    if len(cmd_wheel_rate_rad_s) == int(constant_velocity_window):
         v_cmd_window = wheel_radius_m * np.asarray(cmd_wheel_rate_rad_s, dtype=float)
         diffs = np.diff(v_cmd_window)
         if np.all(np.abs(diffs) <= 0.01):
@@ -271,6 +337,52 @@ def estimate_velocity_from_acceleration(time_imu_seconds, filtered_acceleration,
     current_velocity_estimate_mps =  previous_velocity_estimate_mps + 0.5*(current_filtered_acceleration + previous_filtered_acceleration) * dt
 
     return current_velocity_estimate_mps
+
+
+def integrate_yaw_rate_with_gating(time_imu_seconds, filtered_yaw_rate, cmd_yaw_rate_rad_s, previous_yaw_estimate_rad, constant_turn_window, zupt_yaw_rate_threshold_rad_s):
+    """
+    Trapezoidal integrate yaw rate with gentle gating:
+      • If both measured and commanded yaw rates are ~0 → HOLD last yaw (no drift).
+      • If commanded yaw rate is nearly constant over a window → integrate using cmd yaw rate.
+      • Else → integrate measured (filtered) yaw rate.
+    Angles are wrapped to (-pi, pi].
+    """
+    import math
+    import numpy as np
+
+    # Need at least two samples
+    if (len(time_imu_seconds) < 2 or
+        len(filtered_yaw_rate) < 2 or
+        len(cmd_yaw_rate_rad_s) < 2):
+        return float(previous_yaw_estimate_rad)
+
+    previous_time_imu_seconds,  current_time_imu_seconds  = float(time_imu_seconds[-2]), float(time_imu_seconds[-1])
+    previous_yaw_rate, current_yaw_rate = float(filtered_yaw_rate[-2]), float(filtered_yaw_rate[-1])
+    previous_cmd_yaw_rate, current_cmd_yaw_rate = float(cmd_yaw_rate_rad_s[-2]), float(cmd_yaw_rate_rad_s[-1])
+
+    # --- ZUPT-like HOLD (no drift): if both measured & commanded turn rates are tiny
+    no_turn_meas = abs(current_yaw_rate) < zupt_yaw_rate_threshold_rad_s
+    no_turn_cmd  = abs(current_cmd_yaw_rate) < zupt_yaw_rate_threshold_rad_s
+    if no_turn_meas and no_turn_cmd:
+        return float(previous_yaw_estimate_rad)  # hold last yaw
+    
+    # --- CUPT-like constant-turn detection on commanded yaw rate
+    if len(cmd_yaw_rate_rad_s) == int(constant_turn_window):
+        diffs = np.diff(np.asarray(cmd_yaw_rate_rad_s, dtype=float))
+        if np.all(np.abs(diffs) <= 0.01):
+            previous_yaw_rate, current_yaw_rate = previous_cmd_yaw_rate, current_cmd_yaw_rate
+
+    # Trapezoidal integration
+    dt = current_time_imu_seconds - previous_time_imu_seconds
+    if not np.isfinite(dt) or dt <= 0.0:
+        return float(previous_yaw_estimate_rad)
+    
+    yaw_new = previous_yaw_estimate_rad + 0.5 * (previous_yaw_rate + current_yaw_rate) * dt
+
+    # Wrap to (-pi, pi]
+    yaw_new = (yaw_new + math.pi) % (2.0 * math.pi) - math.pi
+
+    return float(yaw_new)
 
 
 class ImuJsonToOdom(Node):
@@ -320,11 +432,15 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('mount_yaw_deg', 180.0)
         self.declare_parameter('apply_mounting_tf_in_odom', True)
         self.declare_parameter('accel_filtering', True)          # enable SG smoothing
+        self.declare_parameter('yaw_rate_filtering', True)
         self.declare_parameter('sg_window_length', 10)           # causal window length
         self.declare_parameter('sg_poly_order', 2)               # polynomial order
         self.declare_parameter('wheel_radius_m', 0.04)
+        self.declare_parameter('half_track_l', 0.065)
         self.declare_parameter('zupt_speed_threshold_mps', 0.02)
-        self.declare_parameter('constant_velocity_threshold', 10)
+        self.declare_parameter('constant_velocity_window', 10)
+        self.declare_parameter('zupt_yaw_rate_threshold_rad_s', 0.01)
+        self.declare_parameter('constant_turn_window', 10)
 
         # Read parameters
         self.http_url = self.get_parameter('http_url').value
@@ -352,11 +468,15 @@ class ImuJsonToOdom(Node):
         self.mounting_rpy_deg = [self.mount_roll_deg, self.mount_pitch_deg, self.mount_yaw_deg] 
         self.apply_mounting_tf = bool(self.get_parameter('apply_mounting_tf_in_odom').value)
         self.accel_filtering = bool(self.get_parameter('accel_filtering').value)
+        self.yaw_rate_filtering = bool(self.get_parameter('yaw_rate_filtering').value)
         self.sg_window_length = int(self.get_parameter('sg_window_length').value)
         self.sg_poly_order = int(self.get_parameter('sg_poly_order').value)
         self.wheel_radius_m = float(self.get_parameter('wheel_radius_m').value)
+        self.half_track_l = float(self.get_parameter('half_track_l').value)
         self.zupt_speed_threshold_mps = float(self.get_parameter('zupt_speed_threshold_mps').value)
-        self.constant_velocity_threshold = int(self.get_parameter('constant_velocity_threshold').value)
+        self.constant_velocity_window = int(self.get_parameter('constant_velocity_window').value)
+        self.zupt_yaw_rate_threshold_rad_s = float(self.get_parameter('zupt_yaw_rate_threshold_rad_s').value)
+        self.constant_turn_window = int(self.get_parameter('constant_turn_window').value)
 
         # calibration buffers/state
         self.g = 9.80665
@@ -374,16 +494,20 @@ class ImuJsonToOdom(Node):
         # Rolling buffers used to call the offline function on a sliding window
         self._time_buf = deque(maxlen=self.sg_window_length)
         self._accel_buf = deque(maxlen=self.sg_window_length)
-        self._cmd_vel_buf = deque(maxlen=self.constant_velocity_threshold)
+        self._yaw_rate_buf = deque(maxlen=self.sg_window_length)
+        self._cmd_vel_buf = deque(maxlen=self.constant_velocity_window)
+        self._cmd_yaw_rate_buf = deque(maxlen=self.constant_turn_window)
         self._ax_filtered_buf = deque(maxlen=2)
+        self._gz_filtered_buf = deque(maxlen=2)
 
-        # Integrated velocity state
+        # Integrated velocity and yaw state
         self.vx_estimated = 0.0
+        self.yaw_estimated = 0.0
         self.prev_vx_estimated = 0.0
+        self.prev_yaw_estimated = 0.0
 
         # Pre-compute mounting quaternion: base_link <- imu_link
         mr, mp, my = [math.radians(v) for v in self.mounting_rpy_deg]
-        # static TF publishes base->imu; we need imu->base for orientation correction → inverse (conjugate)
         q_base_from_imu = rpy_to_quat(mr, mp, my)
         self.q_imu_to_base = quat_conj(q_base_from_imu)
         self.q_imu_to_base = quat_normalize(self.q_imu_to_base)
@@ -473,13 +597,14 @@ class ImuJsonToOdom(Node):
             return
 
         try:
-            r = float(js['r'])
-            p = float(js['p'])
-            y = float(js['y'])
+            roll = float(js['r'])
+            pitch = float(js['p'])
+            yaw = float(js['y'])
+
             if self.rpy_is_deg:
-                r = math.radians(r)  # convert deg to rad
-                p = math.radians(p)  # convert deg to rad
-                y = math.radians(y)  # convert deg to rad
+                roll = math.radians(roll)  # convert deg to rad
+                pitch = math.radians(pitch)  # convert deg to rad
+                yaw = math.radians(yaw)  # convert deg to rad
 
             gx = float(js['gx'])
             gy = float(js['gy'])
@@ -528,31 +653,25 @@ class ImuJsonToOdom(Node):
                     self.get_logger().info(f"Auto-level complete (samples={self._calib_count}).")
                     self.pub_auto_level_ready.publish(Bool(data=True))
                     self._ready_published = True
-                    
 
-            # Quaternion as reported by the IMU (in imu_link frame)
-            qx, qy, qz, qw = euler_zyx_to_quat(r, p, y)
-
-            # Compose rotation: imu_link --(q_align)--> ideal_imu --(q_imu_to_base)--> base_link
+            # Compose rotation: sensor_native_link --(q_align)--> leveled_sensor  --(q_imu_to_base)--> base_link
             q_total = self.q_imu_to_base
             if self._calib_done and self.auto_level:
                 q_total = quat_mul(self.q_imu_to_base, self.q_align)
             q_total = quat_normalize(q_total)
 
-            # Apply IMU mounting correction (180° yaw): base_link using imu->base mounting quaternion
-            q_imu = quat_normalize((qx, qy, qz, qw))
+            # Apply IMU mounting correction (180° yaw) and auto-level correction
             if self.apply_mounting_tf:      
-                qx, qy, qz, qw = quat_mul(q_total, q_imu)  
-                # qx, qy, qz, qw = quat_mul(q_imu, q_total)  TODO: Check which one is right!!!
                 gx, gy, gz = rotate_vec_by_quat((gx, gy, gz), q_total)
                 ax, ay, az = rotate_vec_by_quat((ax, ay, az), q_total)
-            else:
-                qx, qy, qz, qw = q_imu
 
-            # Store raw acceleration data for debugging
+            # Store raw data for debugging
             ax_raw = ax
             ay_raw = ay
             az_raw = az
+            gx_raw = gx
+            gy_raw = gy
+            gz_raw = gz
 
             # Warning that ax has a big residual:
             if not self._calib_done and self.auto_level and abs(ax_raw) > self.accel_residual_thresh:
@@ -562,16 +681,25 @@ class ImuJsonToOdom(Node):
             # --- Collect into rolling buffers ---
             t_sec_now = self.get_clock().now().nanoseconds * 1e-9  # timestamp aligned with this IMU sample
             self._time_buf.append(t_sec_now)
-            self._accel_buf.append(ax)  # longitudinal accel in base_link
+            self._accel_buf.append(ax_raw)  # longitudinal accel in base_link
             self._cmd_vel_buf.append( 0.5 * (self.cmd_left + self.cmd_right) )  # average wheel command
+            self._yaw_rate_buf.append(gz_raw)  # yaw rate in base_link
+            self._cmd_yaw_rate_buf.append((self.cmd_right * self.wheel_radius_m - self.cmd_left * self.wheel_radius_m)/(2*self.half_track_l)) # average wheel command
 
-            # --- Filter and unbias acceleration
+            # --- Filter and unbias
             ax_filtered = filter_and_unbias_acceleration(self._time_buf, self._accel_buf, window_length=self.sg_window_length, poly_order=self.sg_poly_order, acceleration_filtering=self.accel_filtering)
             self._ax_filtered_buf.append(ax_filtered)
 
+            gz_filtered = filter_and_unbias_angular_velocity(self._time_buf, self._yaw_rate_buf, window_length=self.sg_window_length, poly_order=self.sg_poly_order, angular_filtering=self.yaw_rate_filtering)
+            self._gz_filtered_buf.append(gz_filtered)
+
             # --- Velocity from IMU acceleration via simple integration ---
-            self.vx_estimated = estimate_velocity_from_acceleration(self._time_buf, self._ax_filtered_buf, self._cmd_vel_buf, self.prev_vx_estimated, wheel_radius_m=self.wheel_radius_m, constant_velocity_threshold=self.constant_velocity_threshold, zupt_speed_threshold_mps=self.zupt_speed_threshold_mps)
+            self.vx_estimated = integrate_acceleration_with_gating(self._time_buf, self._ax_filtered_buf, self._cmd_vel_buf, self.prev_vx_estimated, wheel_radius_m=self.wheel_radius_m, constant_velocity_window=self.constant_velocity_window, zupt_speed_threshold_mps=self.zupt_speed_threshold_mps)
             self.prev_vx_estimated = self.vx_estimated
+
+            # --- Yaw from IMU yaw rate via simple integration ---
+            self.yaw_estimated = integrate_yaw_rate_with_gating(self._time_buf, self._gz_filtered_buf, self._cmd_yaw_rate_buf, self.prev_yaw_estimated, constant_turn_window=self.constant_turn_window, zupt_yaw_rate_threshold_rad_s=self.zupt_yaw_rate_threshold_rad_s)
+            self.prev_yaw_estimated = self.yaw_estimated
 
         except Exception as e:
             self.get_logger().warning(f"Conversion error: {e}")
@@ -586,6 +714,7 @@ class ImuJsonToOdom(Node):
         odom.header.frame_id = self.odom_frame
         odom.child_frame_id = self.base_link
 
+        qx, qy, qz, qw = rpy_to_quat(0.0, 0.0, self.yaw_estimated)
         odom.pose.pose.orientation.x = qx
         odom.pose.pose.orientation.y = qy
         odom.pose.pose.orientation.z = qz
@@ -593,7 +722,9 @@ class ImuJsonToOdom(Node):
 
           # --- DEBUG: print RPY in degrees ---
         roll_deg, pitch_deg, yaw_deg = quat_to_rpy_deg(qx, qy, qz, qw)
-        # self.get_logger().info(f"RPY_deg: roll={roll_deg:+6.2f}  pitch={pitch_deg:+6.2f}  yaw={yaw_deg:+6.2f}")
+        self.get_logger().info(f"RPY_deg_EST: roll={roll_deg:+6.2f}  pitch={pitch_deg:+6.2f}  yaw={yaw_deg:+6.2f}")
+
+
 
         if self.raw_accel_debug_mode:
             odom.twist.twist.linear.x = ax_raw
@@ -604,9 +735,9 @@ class ImuJsonToOdom(Node):
             odom.twist.twist.linear.y = 0.0
             odom.twist.twist.linear.z = 0.0
 
-        odom.twist.twist.angular.x = gx
-        odom.twist.twist.angular.y = gy
-        odom.twist.twist.angular.z = gz
+        odom.twist.twist.angular.x = 0.0
+        odom.twist.twist.angular.y = 0.0
+        odom.twist.twist.angular.z = gz_filtered
 
         self.odom_pub.publish(odom)
 

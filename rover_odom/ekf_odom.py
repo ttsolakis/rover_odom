@@ -73,7 +73,7 @@ class EkfOdomNode(Node):
         self.declare_parameter('ekf_rate_hz', 200.0)
 
         # Diff-drive model params
-        self.declare_parameter('rho', 0.040)             # wheel radius [m]
+        self.declare_parameter('wheel_radius_m', 0.040)             # wheel radius [m]
         self.declare_parameter('half_track_l', 0.065)    # half track [m]
 
         # Process covariance diag (x,y,phi,u,r)
@@ -109,7 +109,7 @@ class EkfOdomNode(Node):
 
         # Read EKF params
         self.ekf_rate_hz = float(self.get_parameter('ekf_rate_hz').value)
-        self.rho         = float(self.get_parameter('rho').value)
+        self.wheel_radius_m         = float(self.get_parameter('wheel_radius_m').value)
         self.l           = float(self.get_parameter('half_track_l').value)
 
         self.Q = np.diag([
@@ -278,8 +278,8 @@ class EkfOdomNode(Node):
         x_p   = x + math.cos(phi) * u * dt
         y_p   = y + math.sin(phi) * u * dt
         phi_p = wrap_pi(phi + r * dt)
-        u_p   = 0.5 * self.rho * (omega_L + omega_R)
-        r_p   = (self.rho / (2.0 * self.l)) * (omega_R - omega_L)
+        u_p   = 0.5 * self.wheel_radius_m * (omega_L + omega_R)
+        r_p   = (self.wheel_radius_m / (2.0 * self.l)) * (omega_R - omega_L)
         z_pred = np.array([[x_p], [y_p], [phi_p], [u_p], [r_p]], dtype=float)
 
         # Jacobian wrt z
@@ -387,6 +387,7 @@ class EkfOdomNode(Node):
 
         # Periodic logging
         if self._ekf_steps % max(1, self.log_every_n) == 0:
+            pass
 
             # self.get_logger().info(
             #     "EKF | dt={:.3f}s | "
