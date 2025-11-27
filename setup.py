@@ -33,6 +33,7 @@ setup(
     entry_points={
         'console_scripts': [
             'imu_reader      = rover_odom.imu_reader:main',
+            'magnetometer_reader = rover_odom.magnetometer_reader:main',
             'rover_teleop    = rover_odom.rover_teleop:main',
             'ekf_odom        = rover_odom.ekf_odom:main',
             'logger_cmd_vel_yaw  = rover_odom.logger_cmd_vel_yaw:main',

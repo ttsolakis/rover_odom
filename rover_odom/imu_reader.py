@@ -366,11 +366,11 @@ def integrate_yaw_rate_with_gating(time_imu_seconds, filtered_yaw_rate, cmd_yaw_
     if no_turn_meas and no_turn_cmd:
         return float(previous_yaw_estimate_rad)  # hold last yaw
     
-    # --- CUPT-like constant-turn detection on commanded yaw rate
-    if len(cmd_yaw_rate_rad_s) == int(constant_turn_window):
-        diffs = np.diff(np.asarray(cmd_yaw_rate_rad_s, dtype=float))
-        if np.all(np.abs(diffs) <= 0.01):
-            previous_yaw_rate, current_yaw_rate = previous_cmd_yaw_rate, current_cmd_yaw_rate
+    # # --- CUPT-like constant-turn detection on commanded yaw rate
+    # if len(cmd_yaw_rate_rad_s) == int(constant_turn_window):
+    #     diffs = np.diff(np.asarray(cmd_yaw_rate_rad_s, dtype=float))
+    #     if np.all(np.abs(diffs) <= 0.01):
+    #         previous_yaw_rate, current_yaw_rate = previous_cmd_yaw_rate, current_cmd_yaw_rate
 
     # Trapezoidal integration
     dt = current_time_imu_seconds - previous_time_imu_seconds
@@ -439,7 +439,7 @@ class ImuJsonToOdom(Node):
         self.declare_parameter('half_track_l', 0.065)
         self.declare_parameter('zupt_speed_threshold_mps', 0.02)
         self.declare_parameter('constant_velocity_window', 10)
-        self.declare_parameter('zupt_yaw_rate_threshold_rad_s', 0.01)
+        self.declare_parameter('zupt_yaw_rate_threshold_rad_s', 0.05)
         self.declare_parameter('constant_turn_window', 10)
 
         # Read parameters
@@ -720,12 +720,6 @@ class ImuJsonToOdom(Node):
         odom.pose.pose.orientation.z = qz
         odom.pose.pose.orientation.w = qw
 
-          # --- DEBUG: print RPY in degrees ---
-        roll_deg, pitch_deg, yaw_deg = quat_to_rpy_deg(qx, qy, qz, qw)
-        self.get_logger().info(f"RPY_deg_EST: roll={roll_deg:+6.2f}  pitch={pitch_deg:+6.2f}  yaw={yaw_deg:+6.2f}")
-
-
-
         if self.raw_accel_debug_mode:
             odom.twist.twist.linear.x = ax_raw
             odom.twist.twist.linear.y = ay_raw
@@ -738,6 +732,14 @@ class ImuJsonToOdom(Node):
         odom.twist.twist.angular.x = 0.0
         odom.twist.twist.angular.y = 0.0
         odom.twist.twist.angular.z = gz_filtered
+
+
+        # --- DEBUG: print RPY in degrees ---
+        roll_deg, pitch_deg, yaw_deg = quat_to_rpy_deg(qx, qy, qz, qw)
+        # self.get_logger().info(f"RPY_deg_EST: roll={roll_deg:+6.2f}  pitch={pitch_deg:+6.2f}  yaw={yaw_deg:+6.2f}")
+        self.get_logger().info(f" yaw={yaw_deg:+6.2f} u_x={self.vx_estimated:+6.2f} omega={gz_filtered:+6.2f}")
+
+
 
         self.odom_pub.publish(odom)
 
