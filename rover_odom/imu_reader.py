@@ -737,7 +737,7 @@ class ImuJsonToOdom(Node):
         # --- DEBUG: print RPY in degrees ---
         roll_deg, pitch_deg, yaw_deg = quat_to_rpy_deg(qx, qy, qz, qw)
         # self.get_logger().info(f"RPY_deg_EST: roll={roll_deg:+6.2f}  pitch={pitch_deg:+6.2f}  yaw={yaw_deg:+6.2f}")
-        self.get_logger().info(f" yaw={yaw_deg:+6.2f} u_x={self.vx_estimated:+6.2f} omega={gz_filtered:+6.2f}")
+        # self.get_logger().info(f" yaw={yaw_deg:+6.2f} u_x={self.vx_estimated:+6.2f} omega={gz_filtered:+6.2f}")
 
 
 

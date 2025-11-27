@@ -11,7 +11,7 @@ from rclpy.time import Time
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Float64
 from geometry_msgs.msg import Vector3Stamped, TransformStamped
 from tf2_ros import TransformBroadcaster  
 
@@ -60,11 +60,15 @@ class EkfOdomNode(Node):
         # --- I/O Parameters (unchanged) ---
         self.declare_parameter('imu_odom_topic', '/imu_odom')
         self.declare_parameter('wheel_cmd_topic', '/wheel_cmd')
+        self.declare_parameter('mag_yaw_topic', '/magnetometer/yaw')
+        self.declare_parameter('use_mag_yaw', True)
         self.declare_parameter('log_every_n', 20)
         self.declare_parameter('cmd_buffer_size', 500)
 
         self.imu_odom_topic: str = self.get_parameter('imu_odom_topic').value
         self.wheel_cmd_topic: str = self.get_parameter('wheel_cmd_topic').value
+        self.mag_yaw_topic: str = self.get_parameter('mag_yaw_topic').value
+        self.use_mag_yaw: bool = bool(self.get_parameter('use_mag_yaw').value)
         self.log_every_n: int = int(self.get_parameter('log_every_n').value)
         self.cmd_buffer_size: int = int(self.get_parameter('cmd_buffer_size').value)
 
@@ -161,6 +165,11 @@ class EkfOdomNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        mag_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=50,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
 
         # --- Subscriptions ---
         self.sub_imu_odom = self.create_subscription(
@@ -169,7 +178,9 @@ class EkfOdomNode(Node):
         self.sub_wheel_cmd = self.create_subscription(
             Vector3Stamped, self.wheel_cmd_topic, self._cb_wheel_cmd, cmd_qos
         )
-
+        self.sub_mag_yaw = self.create_subscription(
+            Float64, self.mag_yaw_topic, self._cb_mag_yaw, mag_qos
+        )
         self._ready_sub = self.create_subscription(
             Bool, "/auto_level_ready", self._cb_ready, ready_qos
         )
@@ -178,6 +189,9 @@ class EkfOdomNode(Node):
         self._imu_count = 0
         self._last_imu_time: Optional[Time] = None
         self._last_cmd_time: Optional[Time] = None
+
+        # Magnetometer yaw state
+        self.last_mag_yaw = 0.0
 
         # Store last messages (for the EKF timer to consume)
         self.last_imu_odom: Optional[Odometry] = None
@@ -270,6 +284,13 @@ class EkfOdomNode(Node):
 
         _, L, R, _ = self.cmd_buf[idx]
         return float(L), float(R)
+    
+    def _cb_mag_yaw(self, msg: Float64):
+        """Store latest magnetometer yaw measurement (rad)."""
+        # Normalize to (-pi, pi]
+        self.last_mag_yaw = wrap_pi(float(msg.data))
+        # Use node clock for timestamp; consistent with EKF tick time
+        self._last_mag_time = self.get_clock().now()
 
     def _predict(self, z: np.ndarray, P: np.ndarray, dt: float, omega_L: float, omega_R: float):
         x, y, phi, u, r = z.flatten()
@@ -352,9 +373,13 @@ class EkfOdomNode(Node):
             dt = 0.0
         dt = max(0.0, min(0.2, dt))
 
-        # Measurement from IMU odom
-        qx, qy, qz, qw = msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z, msg.pose.pose.orientation.w
-        phi_meas = yaw_from_quat(qx, qy, qz, qw)
+        # Measurement from IMU and Magnetometer
+        if not self.use_mag_yaw:
+            qx, qy, qz, qw = msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z, msg.pose.pose.orientation.w
+            phi_meas = yaw_from_quat(qx, qy, qz, qw) # Yaw from IMU (seems not very reliable)
+        else:
+            phi_meas = self.last_mag_yaw             # Yaw from additional Magnetometer (more stable)
+        # self.get_logger().info(f" yaw={phi_meas:+6.2f}")
         u_meas   = float(msg.twist.twist.linear.x)   # forward (body-x) speed from your pipeline
         r_meas   = float(msg.twist.twist.angular.z)  # gyro-z
 
