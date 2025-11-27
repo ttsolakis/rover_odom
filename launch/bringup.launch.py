@@ -167,12 +167,25 @@ def generate_launch_description():
             'publish_tf': True,
             'odom_frame': 'odom',
             'base_link_frame': 'base_link',
-            'log_every_n': 20,
+            'log_every_n': 50,
             'cmd_buffer_size': 500,
         }],
     )
 
-    # # 9) Data Logger to identify omega=omega(cmd)
+    # 9) Magnetometer reader node
+    magnetometer = Node(
+        package='rover_odom',
+        executable='magnetometer_reader',
+        name='magnetometer_reader',
+        output='screen',
+        parameters=[{
+            'publish_rate': 50.0,
+            'scale_lsb_to_tesla': 0.3e-6,
+            'yaw_offset_deg': 0.0,
+        }],
+    )
+
+    # # 10) Data Logger to identify omega=omega(cmd)
     # logger_term = ExecuteProcess(
     #     cmd=[
     #         'gnome-terminal', '--wait', '--', 'bash', '-lc',
@@ -188,7 +201,7 @@ def generate_launch_description():
     # )
 
 
-    # # 10) Data Logger to identify velocities from IMU accelerations
+    # # 11) Data Logger to identify velocities from IMU accelerations
     # tools_dir = os.path.expanduser('~/slam_ws/src/rover_odom/tools/velocity_from_imu_identification')
     # logger_imu_cmd_vel = Node(
     #     package='rover_odom',
@@ -207,7 +220,7 @@ def generate_launch_description():
     #         }]
     # )
 
-    # 11) Optional: ros2 bag record (recommended set) → ~/bags/rover_<timestamp>/
+    # 12) Optional: ros2 bag record (recommended set) → ~/bags/rover_<timestamp>/
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     bags_dir = os.path.expanduser('~/bags')
     os.makedirs(bags_dir, exist_ok=True)
@@ -251,6 +264,7 @@ def generate_launch_description():
         rviz_delayed,
         teleop,
         ekf,
+        magnetometer,
         # logger_term,
         # logger_imu_cmd_vel,
         bag_record_delayed,
